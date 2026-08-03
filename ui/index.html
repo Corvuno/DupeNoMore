@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DupeNoMore</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="error-bar" class="error-bar hidden">
+    <span id="error-msg"></span>
+    <button id="copy-error-log">Copy error log</button>
+    <button id="dismiss-error">✕</button>
+  </div>
+
+  <div id="workspace">
+    <!-- ═══ TOP BAR ═══ -->
+    <header id="topbar">
+      <button class="tb-brand" id="tb-home" title="Home">
+        <span class="tb-logo">◈</span>
+        <span class="tb-title">DupeNoMore</span>
+        <span class="tb-version" id="app-version">v2.7.0710.0720</span>
+      </button>
+      <nav class="tb-nav">
+        <button class="tb-btn" id="tb-new" data-view="setup">＋ New scan</button>
+        <button class="tb-btn" id="tb-recent">🕑 Recent scans <span class="tb-badge" id="tb-recent-count"></span></button>
+        <button class="tb-btn tb-scan-live hidden" id="tb-live"><span id="tb-live-label">Scanning…</span></button>
+      </nav>
+      <div class="tb-actions">
+        <button class="tb-btn tb-btn-ghost" id="tb-search">⌕ Search</button>
+        <button class="tb-btn tb-btn-ghost" id="tb-settings">⚙ Settings</button>
+        <button class="tb-icon-btn" id="theme-toggle" title="Toggle light/dark">◐</button>
+      </div>
+    </header>
+
+    <!-- History drawer (slides down from top bar) -->
+    <div id="history-drawer" class="hidden">
+      <div class="hd-head">
+        <input type="text" class="hd-search" id="history-search" placeholder="Search previous scans…">
+        <button class="tb-btn tb-btn-ghost" id="hd-more">⋯ More</button>
+        <button class="hd-close" id="hd-close" title="Close">✕</button>
+      </div>
+      <div id="mount-history" class="hd-list"></div>
+    </div>
+    <div id="drawer-scrim" class="hidden"></div>
+
+    <!-- ═══ FULL-WIDTH CONTENT ═══ -->
+    <main id="content">
+      <div id="mount-welcome"  class="ws-panel"></div>
+      <div id="mount-setup"    class="ws-panel hidden">
+        <div class="setup-page">
+          <div class="setup-header">
+            <h1>Set up a scan</h1>
+            <p>Choose the folders to search and how thorough the scan should be.</p>
+          </div>
+          <div class="setup-grid">
+            <section class="setup-col">
+              <div id="mount-folders"></div>
+            </section>
+            <section class="setup-col">
+              <div id="mount-scan"></div>
+            </section>
+          </div>
+          <div class="setup-footer">
+            <button class="btn btn-primary btn-lg" id="setup-scan-btn">▶ Start scan</button>
+          </div>
+        </div>
+      </div>
+      <div id="mount-run"      class="ws-panel hidden"></div>
+      <div id="mount-review"   class="ws-panel hidden"></div>
+      <div id="mount-settings" class="ws-panel hidden"></div>
+      <div id="mount-search"   class="ws-panel hidden"></div>
+      <div id="mount-files"    class="ws-panel hidden"></div>
+    </main>
+  </div>
+
+  <div id="confirm-overlay" class="overlay hidden">
+    <div class="dialog">
+      <h3 id="confirm-title">Confirm</h3>
+      <p id="confirm-body"></p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="confirm-ok" class="btn btn-danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/folders.js"></script>
+  <script src="js/profiles.js"></script>
+  <script src="js/scan.js"></script>
+  <script src="js/wizard.js"></script>
+  <script src="js/run.js"></script>
+  <script src="js/review.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/filescan.js"></script>
+  <script src="js/search.js"></script>
+  <script src="js/welcome.js"></script>
+  <script src="js/history.js"></script>
+  <script src="js/shell.js"></script>
+</body>
+</html>
