@@ -14,11 +14,29 @@ function matchesExcludePattern(dirPath, pattern) {
   const regexStr = pattern
     .replace(/\\/g, '/')
     .replace(/[.+^${}()|[\]]/g, '\\$&')
-    .replace(/\*/g, '.*');
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
   try {
     const re = new RegExp(regexStr, 'i');
     return re.test(dirPath.replace(/\\/g, '/'));
   } catch { return false; }
+}
+
+// Exclude patterns apply to folders and to files.
+//  - Folders: matched against the full folder path (unchanged behaviour).
+//  - Files: a pattern with a path separator ("D:\Backup\*.png") is matched against the
+//    full path; one without ("Thumbs.db", "*_thumb*", "IMG_00??.jpg") against the file name
+//    only, so a file-name pattern doesn't also knock out every file under a matching folder.
+// '*' matches any run of characters and '?' a single character; matching is case-insensitive
+// and, as before, a pattern may match any part of the name/path.
+function isExcluded(fullPath, patterns, isDir = false) {
+  if (!patterns || !patterns.length) return false;
+  const name = path.basename(fullPath);
+  return patterns.some(p => {
+    if (!p) return false;
+    const target = isDir || /[\\/]/.test(p) ? fullPath : name;
+    return matchesExcludePattern(target, p);
+  });
 }
 
 function isSystemDir(dirPath, skipSystem) {
@@ -81,11 +99,12 @@ async function walkDir(dirPath, recursive, folder, extensions, filters, results,
     if (entry.isDirectory()) {
       if (!recursive) continue;
       if (isSystemDir(fullPath, filters.skipSystemFolders)) continue;
-      if (filters.excludePatterns?.some(p => p && matchesExcludePattern(fullPath, p))) continue;
+      if (isExcluded(fullPath, filters.excludePatterns, true)) continue;
       await walkDir(fullPath, recursive, folder, extensions, filters, results, seen, onProgress);
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase().replace('.', '');
       if (!extensions.has(ext)) continue;
+      if (isExcluded(fullPath, filters.excludePatterns)) continue;
       if (seen.has(fullPath)) continue;
       seen.add(fullPath);
 
@@ -114,4 +133,4 @@ async function walkDir(dirPath, recursive, folder, extensions, filters, results,
   }
 }
 
-module.exports = { collectFiles };
+module.exports = { collectFiles, isExcluded };

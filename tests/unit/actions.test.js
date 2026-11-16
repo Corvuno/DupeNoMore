@@ -309,3 +309,24 @@ describe('safeMoveSync — cross-device fallback', () => {
     }
   });
 });
+
+describe('executeActions — deselected groups', () => {
+  test('every file in a deselected group is skipped, other groups still run', async () => {
+    const { executeActions } = require('../../src/core/actions');
+    const a = write('a.jpg'), b = write('b.jpg'), c = write('c.jpg'), d = write('d.jpg');
+    const resultFile = makeResult([
+      { confidenceLabel: 'certain', source: a, source_info: {}, matches: [{ path: b }] },
+      { confidenceLabel: 'certain', source: c, source_info: {}, matches: [{ path: d }] },
+    ]);
+    const r = await executeActions(resultFile, {
+      actions: { certain: 'recycle_removed' },
+      selections: { [a]: 'keep', [b]: 'remove', [c]: 'keep', [d]: 'remove' },
+      locked: [], deselectedGroups: [a], reproduceStructure: false,
+    }, true);
+    const byFile = Object.fromEntries(r.log.map(l => [l.file, l]));
+    expect(byFile[a].reason).toBe('group deselected');
+    expect(byFile[b].reason).toBe('group deselected');
+    expect(byFile[d].action).toBe('recycle');
+    expect(r.stats.recycled).toBe(1);
+  });
+});

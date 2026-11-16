@@ -165,7 +165,7 @@ const Page_scan = (() => {
           <label for="skip-system">Skip Windows system folders</label>
         </div>
         <div class="settings-row" style="align-items:flex-start">
-          <label style="padding-top:6px">Exclude patterns <span class="text-muted">(one per line, wildcards ok)</span></label>
+          <label style="padding-top:6px">Exclude patterns <span class="text-muted">(one per line, * and ? ok; folder or file names, e.g. Thumbs.db, *_thumb*, D:\\Backup)</span></label>
           <textarea id="exclude-patterns" class="textarea" rows="4" style="max-width:400px">${(fi.excludePatterns||[]).join('\n')}</textarea>
         </div>
       </div>

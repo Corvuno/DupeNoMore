@@ -194,7 +194,7 @@ const Page_wizard = (() => {
         </label>
       </div>
       <div style="margin-top:14px">
-        <label>Exclude patterns (one per line, wildcards ok)</label>
+        <label>Exclude patterns (one per line, * and ? ok; matches folder or file names)</label>
         <textarea id="wiz-excludes" class="textarea" rows="3">${(fi.excludePatterns||[]).join('\n')}</textarea>
       </div>
     `;
