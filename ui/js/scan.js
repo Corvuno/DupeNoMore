@@ -2,6 +2,7 @@
 
 const Page_scan = (() => {
   let config = null;
+  let mountEl = null;   // the element this page renders into (#mount-scan)
 
   const ALGOS = [
     { id: 'dhash', label: 'dHash', desc: 'Edge patterns — fast' },
@@ -18,6 +19,7 @@ const Page_scan = (() => {
   }
 
   function render(container) {
+    mountEl = container;
     const sc = config.scan || {};
     const fi = config.filters || {};
 
@@ -361,8 +363,7 @@ const Page_scan = (() => {
           config.scan = { ...config.scan, ...profile.scan };
           await save(false);
           // Re-render scan settings with new values
-          const container = document.getElementById('page-scan');
-          if (container) render(container);
+          if (mountEl) render(mountEl);
           toast('Profile applied: ' + profile.name, 'success');
         });
       });
