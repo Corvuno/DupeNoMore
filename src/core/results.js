@@ -44,8 +44,33 @@ function filterGroups(filePath, filterType, filterValue) {
   const result = loadResult(filePath);
   const before = result.groups.length;
   let removed = 0;
+  let missingFiles = 0;
 
-  if (filterType === 'folder') {
+  if (filterType === 'missing') {
+    // Re-check the disk: drop files that were moved/deleted outside the app since the scan.
+    // If a group's source is gone, the first remaining match becomes the source. Groups left
+    // with fewer than two files are no longer duplicates and are removed.
+    const exists = p => { try { return fs.existsSync(p); } catch { return false; } };
+    result.groups = result.groups.filter(g => {
+      const matches = (g.matches || []).filter(m => exists(m.path));
+      missingFiles += (g.matches || []).length - matches.length;
+      let sourceOk = exists(g.source);
+      if (!sourceOk) {
+        missingFiles++;
+        const promoted = matches.shift();
+        if (promoted) {
+          const { path: p, distances, md5_match, ...info } = promoted;
+          g.source = p;
+          g.source_info = { ...(g.source_info || {}), ...info };
+          sourceOk = true;
+        }
+      }
+      g.matches = matches;
+      const keep = sourceOk && matches.length > 0;
+      if (!keep) removed++;
+      return keep;
+    });
+  } else if (filterType === 'folder') {
     result.groups = result.groups.filter(g => {
       const inFolder = g.source.startsWith(filterValue) ||
         (g.matches || []).some(m => m.path.startsWith(filterValue));
@@ -97,7 +122,7 @@ function filterGroups(filePath, filterType, filterValue) {
   result.groupCount = result.groups.length;
   fs.writeFileSync(filePath, JSON.stringify(result, null, 2));
 
-  return { removed, remaining: result.groups.length };
+  return { removed, remaining: result.groups.length, missingFiles };
 }
 
 // Save/load selection overrides

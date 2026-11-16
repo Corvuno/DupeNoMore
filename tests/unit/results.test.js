@@ -110,3 +110,32 @@ describe('saveOverrides / loadOverrides', () => {
     expect(loadOverrides(tmpDir, 'scan2.json')).toEqual({ '/b.jpg': 'remove' });
   });
 });
+
+describe('filterGroups — missing files', () => {
+  const touch = n => { const p = path.join(tmpDir, n); fs.writeFileSync(p, 'x'); return p; };
+
+  test('drops missing files, promotes a new source, removes groups left with one file', () => {
+    const a = touch('a.jpg'), b = touch('b.jpg'), c = touch('c.jpg'), d = touch('d.jpg');
+    const gone = path.join(tmpDir, 'gone.jpg');
+    writeResult('duplicates_m.json', [
+      { source: a, source_info: {}, matches: [{ path: b }, { path: gone }] },             // stays, loses gone
+      { source: gone, source_info: { size: 1 }, matches: [{ path: c, size: 9 }, { path: d }] }, // c promoted
+      { source: gone, source_info: {}, matches: [{ path: path.join(tmpDir, 'x.jpg') }] },  // all gone
+      { source: a, source_info: {}, matches: [{ path: gone }] },                          // only a left
+    ]);
+    const file = path.join(tmpDir, 'duplicates_m.json');
+    const r = filterGroups(file, 'missing');
+    expect(r).toEqual({ removed: 2, remaining: 2, missingFiles: 5 });
+    const saved = loadResult(file);
+    expect(saved.groups[0].matches.map(m => m.path)).toEqual([b]);
+    expect(saved.groups[1].source).toBe(c);
+    expect(saved.groups[1].source_info.size).toBe(9);
+    expect(saved.groups[1].matches.map(m => m.path)).toEqual([d]);
+  });
+
+  test('nothing missing leaves the result unchanged', () => {
+    const a = touch('a.jpg'), b = touch('b.jpg');
+    writeResult('duplicates_n.json', [{ source: a, source_info: {}, matches: [{ path: b }] }]);
+    expect(filterGroups(path.join(tmpDir, 'duplicates_n.json'), 'missing')).toEqual({ removed: 0, remaining: 1, missingFiles: 0 });
+  });
+});

@@ -146,6 +146,7 @@ const Page_review = (() => {
         <button class="btn btn-ghost btn-xs" id="filter-folder-btn">－ Filter folder out</button>
         <button class="btn btn-ghost btn-xs" id="filter-singletons-btn">－ Singletons</button>
         <button class="btn btn-ghost btn-xs" id="filter-empty-btn">－ Empty groups</button>
+        <button class="btn btn-ghost btn-xs" id="filter-missing-btn" title="Check every file in this result still exists on disk; drop missing files and groups that are no longer duplicates">🔍 Re-check files on disk</button>
       </div>
 
       <div id="actions-panel" class="hidden" style="padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg-2);max-height:55vh;overflow-y:auto;overscroll-behavior:contain">
@@ -274,6 +275,7 @@ const Page_review = (() => {
     el('filter-folder-btn')?.addEventListener('click', filterFolderOut);
     el('filter-singletons-btn')?.addEventListener('click', () => filterFromFile('singletons'));
     el('filter-empty-btn')?.addEventListener('click', () => filterFromFile('empty'));
+    el('filter-missing-btn')?.addEventListener('click', recheckMissing);
     el('filter-pct-below')?.addEventListener('click', async () => {
       const val = prompt('Remove groups where best match is BELOW this %.\n\n84% = dhash threshold boundary.\nEnter 0-100:');
       if (val === null) return;
@@ -1513,6 +1515,20 @@ const Page_review = (() => {
     try {
       const r = await API.filterResult(currentFile, type, value);
       toast('Removed ' + r.removed + ', ' + r.remaining + ' remain.', 'success');
+      await loadFile(currentFile);
+    } catch(e) { toast(e.message, 'error'); }
+  }
+
+  // Files moved or deleted outside the app since the scan: drop them from the result
+  async function recheckMissing() {
+    if (!currentFile) { toast('No result loaded.', 'error'); return; }
+    if (!await confirm('Re-check files on disk', 'Check every file in this result still exists?\nMissing files are removed from their groups, and groups with fewer than two files left are removed. This changes the result file.', 'Check')) return;
+    try {
+      await saveOverrides();
+      const r = await API.filterResult(currentFile, 'missing');
+      toast(r.missingFiles
+        ? r.missingFiles + ' missing files removed · ' + r.removed + ' groups dropped · ' + r.remaining + ' remain'
+        : 'All files still on disk — nothing changed', 'success', 5000);
       await loadFile(currentFile);
     } catch(e) { toast(e.message, 'error'); }
   }
