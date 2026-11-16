@@ -32,6 +32,15 @@ async function init() {
       width INTEGER, height INTEGER, exif_date TEXT, updated_at INTEGER NOT NULL
     )`);
 
+    // Schema/hash versions. v1: wHash was broken before (same value for every
+    // image), so drop cached wHash values; they are recomputed on next scan.
+    const ver = db.exec('PRAGMA user_version')[0]?.values[0][0] || 0;
+    if (ver < 1) {
+      db.run('UPDATE file_hashes SET whash=NULL');
+      db.run('PRAGMA user_version = 1');
+      dirty = true;
+    }
+
     // Save DB to disk every 3s when dirty
     setInterval(() => { if (dirty) _flush(dbPath); }, 3000);
     process.on('exit', () => _flush(dbPath));

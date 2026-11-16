@@ -140,4 +140,53 @@ describe('ScanManager', () => {
     if (scan?.status === 'done') expect(scan.groupCount).toBe(0);
     manager.dismiss(id);
   });
+  // ── Parallel hashing workers ────────────────────────────────────────────────
+  async function makeImages(dir, n) {
+    const sharp = require('sharp');
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < n; i++) {
+      const w = 64, h = 64, buf = Buffer.alloc(w * h * 3);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const o = (y * w + x) * 3;
+        buf[o] = (x * (i + 1) * 7) & 255; buf[o + 1] = (y * (i + 3) * 5) & 255; buf[o + 2] = ((x ^ y) * (i + 2)) & 255;
+      }
+      await sharp(buf, { raw: { width: w, height: h, channels: 3 } }).jpeg({ quality: 90 }).toFile(path.join(dir, `img${i}.jpg`));
+    }
+  }
+  async function waitDone(manager, id, ms = 20000) {
+    const t = Date.now();
+    while (Date.now() - t < ms) {
+      const s = manager.get(id);
+      if (s && ['done', 'error', 'aborted'].includes(s.status)) return s;
+      await new Promise(r => setTimeout(r, 20));
+    }
+    return manager.get(id);
+  }
+
+  test('rescanning a folder whose hashes are all cached completes', async () => {
+    const manager = getManager();
+    const dir = path.join(tmpDir, 'imgs');
+    await makeImages(dir, 24);
+    const cfg = { ...EMPTY_CONFIG, folders: [{ path: dir, active: true, recursive: true, index: 0 }] };
+    const first = await waitDone(manager, await manager.start(cfg));
+    expect(first.status).toBe('done');
+    for (let run = 0; run < 3; run++) {
+      const again = await waitDone(manager, await manager.start(cfg));
+      expect(again.error || null).toBeNull();
+      expect(again.status).toBe('done');
+    }
+  }, 30000);
+
+  test('pause before hashing, then resume: every worker continues and the scan completes', async () => {
+    const manager = getManager();
+    const dir = path.join(tmpDir, 'imgs');
+    await makeImages(dir, 24);
+    const id = await manager.start({ ...EMPTY_CONFIG, folders: [{ path: dir, active: true, recursive: true, index: 0 }] });
+    manager.pause(id); // before the hashing workers start, so all of them wait
+    await new Promise(r => setTimeout(r, 200));
+    expect(manager.get(id).status).toBe('paused');
+    manager.resume(id);
+    const s = await waitDone(manager, id, 10000);
+    expect(s.status).toBe('done');
+  }, 30000);
 });

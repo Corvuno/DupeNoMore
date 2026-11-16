@@ -241,9 +241,12 @@ class ScanManager extends EventEmitter {
     };
 
     const worker = async () => {
-      while (nextIdx < toHash.length) {
+      while (true) {
         await this._checkPause(state);
         if (state.aborted) return;
+        // Claim the next file only after the await above: other workers may
+        // have taken the last files while this one was suspended.
+        if (nextIdx >= toHash.length) return;
         const file = toHash[nextIdx++];
         await hashOne(file);
         processed++;
@@ -493,9 +496,16 @@ class ScanManager extends EventEmitter {
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
+  // Several hashing workers can wait here at once, so they share one promise;
+  // resume()/abort() call pauseResolve() which releases all of them.
   async _checkPause(state) {
     if (!state.paused) return;
-    await new Promise(resolve => { state.pauseResolve = resolve; });
+    if (!state.pausePromise) {
+      state.pausePromise = new Promise(resolve => {
+        state.pauseResolve = () => { state.pausePromise = null; resolve(); };
+      });
+    }
+    await state.pausePromise;
   }
 
   _setPhase(state, phase, message) {
