@@ -4,6 +4,9 @@ const fs = require('fs');
 
 let sharp;
 try { sharp = require('sharp'); } catch { sharp = null; }
+// Files are decoded many-at-once by the scan manager, so one libvips thread
+// per image gives the best total throughput (no oversubscription).
+if (sharp) { try { sharp.concurrency(1); } catch {} }
 
 // Compute MD5 of file bytes
 async function md5File(filePath) {
@@ -176,15 +179,23 @@ function bitsToHex(bits) {
 }
 
 // Hamming distance between two hex hash strings
+const NIBBLE_BITS = [0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4];
 function hammingDistance(h1, h2) {
   if (!h1 || !h2) return Infinity;
   const len = Math.min(h1.length, h2.length);
   let dist = 0;
-  for (let i = 0; i < len; i++) {
-    const xor = parseInt(h1[i], 16) ^ parseInt(h2[i], 16);
-    dist += xor.toString(2).split('1').length - 1;
-  }
+  for (let i = 0; i < len; i++) dist += NIBBLE_BITS[parseInt(h1[i], 16) ^ parseInt(h2[i], 16)];
   return dist;
+}
+
+// Expected hex length of each hash for a given compareSize — used to detect
+// cache entries computed with different settings.
+function expectedHashLength(algo, size = 16) {
+  switch (algo) {
+    case 'dhash': return Math.ceil(size * (size - 1) / 4);
+    case 'ahash': return Math.ceil(size * size / 4);
+    default:      return 16;
+  }
 }
 
 // Compute all requested hashes for a file
@@ -230,4 +241,4 @@ function computeVariantDistance(h1, h2variants) {
   return Math.min(...h2variants.map(h => hammingDistance(h1, h)));
 }
 
-module.exports = { computeHashes, hammingDistance, computeVariantDistance, md5File, getImageInfo };
+module.exports = { computeHashes, hammingDistance, expectedHashLength, computeVariantDistance, md5File, getImageInfo };

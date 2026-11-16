@@ -1,4 +1,10 @@
 'use strict';
+// sharp/libvips decode images on the libuv thread pool (default: 4 threads).
+// Size it to the CPU so parallel hashing can use every core. Must be set
+// before anything touches the thread pool.
+if (!process.env.UV_THREADPOOL_SIZE) {
+  process.env.UV_THREADPOOL_SIZE = String(Math.max(4, Math.min(64, require('os').cpus().length)));
+}
 const express = require('express');
 const path = require('path');
 const http = require('http');

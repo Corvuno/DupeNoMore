@@ -4,7 +4,8 @@ const path    = require('path');
 const fs      = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { collectFiles }   = require('./collector');
-const { computeHashes }  = require('./hasher');
+const { computeHashes, expectedHashLength } = require('./hasher');
+const os                 = require('os');
 const { buildGroups }    = require('./comparator');
 const hashCache          = require('./hashCache');
 const configMgr          = require('./config');
@@ -200,54 +201,81 @@ class ScanManager extends EventEmitter {
       this._log(state, `Step 1/2: Computing ${algoLabel} for ${files.length} files...`);
     }
 
-    for (let i = 0; i < toHash.length; i++) {
-      await this._checkPause(state);
-      if (state.aborted) return;
+    // Read several photos at once so every CPU core is busy (decoding is done
+    // by sharp/libvips on the libuv thread pool, sized in server.js).
+    const CONCURRENCY = Math.max(2, Math.min(32, os.cpus().length));
+    const neededAlgos = activeAlgoList.filter(a => a !== 'md5');
+    const compareSize = sc.compareSize || 16;
+    // A cache entry is only usable when it has every hash this scan needs,
+    // computed at the same compareSize. Otherwise those files could never match.
+    const cacheUsable = c => neededAlgos.every(a => c[a] && c[a].length === expectedHashLength(a, compareSize));
+    let processed = 0;
+    let nextIdx = 0;
 
-      const file  = toHash[i];
-      const total = files.length;
-      const done  = hashedFiles.length;
-      const pct   = Math.round((done / total) * 100);
-      this._setProgress(state, 'hash', pct, done, total);
-
+    const hashOne = async (file) => {
       const cached = await hashCache.getAsync(file.path, file.mtime, file.size);
-      if (cached) {
+      if (cached && cacheUsable(cached)) {
         cacheHits.count++;
         hashedFiles.push({ ...file, ...cached });
-      } else {
-        try {
-          const hashes = await computeHashes(file.path, sc);
-          hashedFiles.push({ ...file, ...hashes });
+        return;
+      }
+      try {
+        const hashes = await computeHashes(file.path, sc);
+        hashedFiles.push({ ...file, ...hashes });
+        if (hashes.error) {
+          // Pixels could not be decoded: keep the file for MD5 matching, but
+          // don't cache the incomplete result so it is retried next scan.
+          skipped.perceptual = (skipped.perceptual || 0) + 1;
+          this._log(state, `[warn] No image fingerprint for ${path.basename(file.path)} (MD5 only): ${hashes.error}`);
+        } else {
           await hashCache.setAsync(file.path, file.mtime, file.size, hashes);
-        } catch (e) {
-          skipped.count++;
-          const reason = /permission|EACCES|EPERM/i.test(e.message) ? 'permission'
-                       : /ENOENT|no such/i.test(e.message) ? 'missing'
-                       : 'unreadable';
-          skipped.reasons[reason] = (skipped.reasons[reason] || 0) + 1;
-          this._log(state, `[warn] Cannot hash ${path.basename(file.path)}: ${e.message}`);
+        }
+      } catch (e) {
+        skipped.count++;
+        const reason = /permission|EACCES|EPERM/i.test(e.message) ? 'permission'
+                     : /ENOENT|no such/i.test(e.message) ? 'missing'
+                     : 'unreadable';
+        skipped.reasons[reason] = (skipped.reasons[reason] || 0) + 1;
+        this._log(state, `[warn] Cannot hash ${path.basename(file.path)}: ${e.message}`);
+      }
+    };
+
+    const worker = async () => {
+      while (nextIdx < toHash.length) {
+        await this._checkPause(state);
+        if (state.aborted) return;
+        const file = toHash[nextIdx++];
+        await hashOne(file);
+        processed++;
+
+        const total = files.length;
+        const pct   = Math.round((hashedFiles.length / total) * 100);
+        this._setProgress(state, 'hash', pct, hashedFiles.length, total);
+
+        if (processed % 100 === 0) {
+          const elapsedMs = Date.now() - hashStart;
+          const rate      = processed / (elapsedMs / 1000);
+          const remaining = toHash.length - processed;
+          const etaSec    = rate > 0 ? Math.round(remaining / rate) : 0;
+          this._log(state, `Hashing: ${hashedFiles.length}/${total} (${pct}%) — ${Math.round(rate)} files/s — ETA ${fmtDur(etaSec * 1000)} — cache: ${cacheHits.count}`);
+          this._emit(state, 'progress');
+        } else if (processed % 50 === 0) {
+          this._emit(state, 'progress');
+        }
+
+        if (processed % CHECKPOINT_EVERY === 0) {
+          saveCheckpoint(dataDir, state.id, { phase: 'hash', files, hashedFiles, groups: [], config, savedAt: new Date().toISOString() });
         }
       }
+    };
 
-      // Progress log every 100 files
-      if ((i + 1) % 100 === 0) {
-        const elapsedMs = Date.now() - hashStart;
-        const rate      = (i + 1) / (elapsedMs / 1000);
-        const remaining = toHash.length - i - 1;
-        const etaSec    = rate > 0 ? Math.round(remaining / rate) : 0;
-        this._log(state, `Hashing: ${hashedFiles.length}/${total} (${pct}%) — ${Math.round(rate)} files/s — ETA ${fmtDur(etaSec * 1000)} — cache: ${cacheHits.count}`);
-        this._emit(state, 'progress');
-      } else if ((i + 1) % 50 === 0) {
-        this._emit(state, 'progress');
-      }
-
-      // Save checkpoint every CHECKPOINT_EVERY files
-      if ((i + 1) % CHECKPOINT_EVERY === 0) {
-        saveCheckpoint(dataDir, state.id, { phase: 'hash', files, hashedFiles, groups: [], config, savedAt: new Date().toISOString() });
-      }
-
-      // (Interim compare removed — was O(n²) and killed hash performance. Use checkpoints to resume.)
-    }
+    this._log(state, `Reading ${CONCURRENCY} files in parallel`);
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toHash.length) }, worker));
+    if (state.aborted) return;
+    // Parallel workers finish in random order; restore the collect order so
+    // results (e.g. which file becomes a group's source) are deterministic.
+    const order = new Map(files.map((f, i) => [f.path, i]));
+    hashedFiles.sort((a, b) => (order.get(a.path) ?? 0) - (order.get(b.path) ?? 0));
 
     const totalMs   = Date.now() - hashStart;
     const totalRate = toHash.length / Math.max(totalMs / 1000, 0.001);
@@ -258,6 +286,9 @@ class ScanManager extends EventEmitter {
       state.skippedCount = skipped.count;
       state.skippedReasons = skipped.reasons;
     }
+    if (skipped.perceptual) {
+      this._log(state, `⚠ ${skipped.perceptual} file${skipped.perceptual > 1 ? 's' : ''} could not be decoded as images — they are only matched as exact (byte-identical) copies`);
+    }
     if (state.aborted) return;
 
     // Final checkpoint after hashing complete
@@ -265,7 +296,7 @@ class ScanManager extends EventEmitter {
 
     // ── Phase 3: Compare ──────────────────────────────────────────────────────
     this._setPhase(state, 'compare', `Comparing ${hashedFiles.length} files...`);
-    this._log(state, `Step 2/2: Comparing ${hashedFiles.length} files using ${algoLabel} — ensureMin=${sc.ensureMin??2}, searchDepth=${sc.searchDepth??1}, thresholds: ${activeAlgoList.map(a=>`${a}:${(sc.thresholds||{})[a]??10}`).join(' ')}`);
+    this._log(state, `Step 2/2: Comparing ${hashedFiles.length} files using ${algoLabel} — ensureMin=${sc.ensureMin??2}, thresholds: ${activeAlgoList.map(a=>`${a}:${(sc.thresholds||{})[a]??10}`).join(' ')}`);
 
     // Check for existing checkpoint to resume from
     let compareCP = null;
@@ -292,7 +323,8 @@ class ScanManager extends EventEmitter {
     const groups = await buildGroups(hashedFiles, sc, (current, total, groupCount, groupsSoFar, resumeState) => {
       // Update progress
       state.progress = { phase: 'compare', current, total, groups: groupCount };
-      this._setPhase(state, 'compare', `Comparing ${current}/${total} files… ${groupCount} groups found`);
+      this._setPhase(state, 'compare', `Comparing ${current}/${total} files…`);
+      this._emit(state, 'progress');
 
       // Save checkpoint every 500 groups or every 2000 files compared
       if (resumeState && (groupCount % 500 === 0 || current % 2000 === 0)) {

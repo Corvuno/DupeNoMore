@@ -2,18 +2,23 @@
 /**
  * Comparator — finds duplicate groups from hashed files.
  *
- * Uses nibble-level pigeonhole index: a 64-bit hash = 16 hex nibbles.
- * If hamming_distance(h1,h2) <= T, at least (16-T) nibbles must be identical.
- * Guaranteed to find ALL pairs within threshold <= 15.
+ * Exact all-pairs comparison: every perceptual hash is packed into 32-bit
+ * words once, then every pair of files is compared with XOR + popcount.
+ * There is no candidate pre-filter, so no pair within threshold can be missed.
+ * 20k files ≈ 200M pairs ≈ ~1-2 s on a modern CPU.
  *
- * buildGroups is ASYNC and yields to the event loop every YIELD_EVERY source
- * files, so WebSocket progress events can fire during long compares.
+ * Grouping is transitive (union-find): if A~B and B~C, A, B and C end up in
+ * one group even when A and C are just outside the threshold. Byte-identical
+ * files (same MD5) are merged into the same groups as their perceptual
+ * matches, so an exact copy plus a recompressed copy form ONE group.
+ *
+ * buildGroups is ASYNC and yields to the event loop periodically so
+ * WebSocket progress events can fire during the compare.
  */
 
 const { hammingDistance } = require('./hasher');
 
 const CONFIDENCE  = { CERTAIN: 3, PROBABLE: 2, UNCERTAIN: 1 };
-const YIELD_EVERY = 200; // yield event loop every N source files
 
 function confidenceLabel(c) {
   if (c >= CONFIDENCE.CERTAIN)  return 'certain';
@@ -60,194 +65,175 @@ function areDuplicates(fileA, fileB, scanConfig) {
   return { match: true, confidence, md5Match: false, distances, matchingAlgos: matches };
 }
 
-// ── Nibble-level pigeonhole index ─────────────────────────────────────────────
-// index[nibblePos][nibbleChar] = [fileIndices]
-function buildNibbleIndex(files, algo) {
-  const index = Array.from({ length: 16 }, () => new Map());
-  for (let i = 0; i < files.length; i++) {
-    const h = files[i][algo];
-    if (!h || h.length < 16) continue;
-    for (let pos = 0; pos < 16; pos++) {
-      const nib = h[pos];
-      if (!index[pos].has(nib)) index[pos].set(nib, []);
-      index[pos].get(nib).push(i);
-    }
-  }
-  return index;
+// ── Packed hashes ─────────────────────────────────────────────────────────────
+function popcount32(x) {
+  x -= (x >>> 1) & 0x55555555;
+  x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+  return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 }
 
-function getCandidates(fileIdx, hash, index, searchDepth) {
-  const cands = new Set();
-  // searchDepth (1-5) controls how many nibble positions are checked
-  // More positions = more strict = faster but may miss matches at high tolerances
-  // Fewer positions checked = more candidates = deeper search
-  // At depth 1 (fast): check all 16 positions (current behavior)
-  // At depth 5 (thorough): also check near-miss nibbles (expand bucket search)
-  const depth = Math.max(1, Math.min(5, searchDepth || 1));
-
-  for (let pos = 0; pos < 16; pos++) {
-    const bucket = index[pos].get(hash[pos]);
-    if (bucket) for (const j of bucket) if (j !== fileIdx) cands.add(j);
-  }
-
-  // At depth >= 3: also check adjacent nibble values (±1 in hex) for each position
-  // This finds more candidates that differ by exactly 1 nibble position
-  if (depth >= 3) {
-    const hexChars = '0123456789abcdef';
-    for (let pos = 0; pos < 16; pos++) {
-      const nibbleIdx = hexChars.indexOf(hash[pos].toLowerCase());
-      if (nibbleIdx < 0) continue;
-      // Check ±1 nibble values
-      for (const delta of [-1, 1]) {
-        const adj = nibbleIdx + delta;
-        if (adj < 0 || adj > 15) continue;
-        const bucket = index[pos].get(hexChars[adj]);
-        if (bucket) for (const j of bucket) if (j !== fileIdx) cands.add(j);
-      }
-    }
-  }
-
-  // At depth >= 5: check ±2 nibble values too
-  if (depth >= 5) {
-    const hexChars = '0123456789abcdef';
-    for (let pos = 0; pos < 16; pos++) {
-      const nibbleIdx = hexChars.indexOf(hash[pos].toLowerCase());
-      if (nibbleIdx < 0) continue;
-      for (const delta of [-2, 2]) {
-        const adj = nibbleIdx + delta;
-        if (adj < 0 || adj > 15) continue;
-        const bucket = index[pos].get(hexChars[adj]);
-        if (bucket) for (const j of bucket) if (j !== fileIdx) cands.add(j);
-      }
-    }
-  }
-
-  return cands;
+// Pack a hex string into 32-bit words. Returns null for missing/invalid hashes.
+function packHex(h) {
+  if (!h || typeof h !== 'string' || !/^[0-9a-fA-F]+$/.test(h)) return null;
+  const words = new Uint32Array(Math.ceil(h.length / 8));
+  for (let i = 0; i < words.length; i++)
+    words[i] = parseInt(h.slice(i * 8, i * 8 + 8).padEnd(8, '0'), 16) >>> 0;
+  return words;
 }
 
-// ── buildGroups (async — yields every YIELD_EVERY source files) ───────────────
-async function buildGroups(hashedFiles, scanConfig, onProgress, checkpoint) {
+// Near-solid images produce hashes with almost all bits equal; they would
+// "match" every other near-solid image, so they are excluded from
+// perceptual matching (MD5 matching still applies).
+function isDegenerate(words, hexLen) {
+  if (!words) return true;
+  const bits = hexLen * 4;
+  let set = 0;
+  for (let i = 0; i < words.length; i++) set += popcount32(words[i]);
+  return set < bits * 0.08 || set > bits * 0.92;
+}
+
+// ── Union-find ────────────────────────────────────────────────────────────────
+function makeUnionFind(n) {
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = i => {
+    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+    return i;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) { if (ra < rb) parent[rb] = ra; else parent[ra] = rb; }
+  };
+  return { find, union };
+}
+
+// ── buildGroups ───────────────────────────────────────────────────────────────
+// Signature kept for compatibility with scanManager: (files, config, onProgress, checkpoint).
+// Checkpoints are no longer needed (the compare takes seconds); the argument is ignored.
+async function buildGroups(hashedFiles, scanConfig, onProgress /*, checkpoint */) {
+  if (typeof onProgress !== 'function') onProgress = null;
   const algos      = scanConfig.algorithms || {};
   const thresholds = scanConfig.thresholds || {};
   const ensureMin  = scanConfig.ensureMin  ?? 2;
   const matchLogic = scanConfig.matchLogic || 'threshold';
-
-  // Resume from checkpoint if provided
-  const groups  = checkpoint?.groups || [];
-  const usedMd5 = new Set();
-  const resumeAssigned = new Set(checkpoint?.assignedPaths || []);
-  const resumeIndex    = checkpoint?.startIndex || 0;
-
-  // ── Step 1: MD5 exact groups ─────────────────────────────────────────────
-  const md5Map = new Map();
-  for (const file of hashedFiles) {
-    if (file.md5) {
-      if (!md5Map.has(file.md5)) md5Map.set(file.md5, []);
-      md5Map.get(file.md5).push(file);
-    }
-  }
-  for (const [, files] of md5Map) {
-    if (files.length < 2) continue;
-    files.sort((a, b) => (a.folderIndex || 0) - (b.folderIndex || 0));
-    const [source, ...matches] = files;
-    usedMd5.add(source.path);
-    matches.forEach(f => usedMd5.add(f.path));
-    groups.push(makeGroup(source, matches, CONFIDENCE.CERTAIN, true));
-  }
-
-  // ── Step 2: Perceptual groups ─────────────────────────────────────────────
-  const perceptual  = hashedFiles.filter(f => !usedMd5.has(f.path));
+  const anchorHash = scanConfig.anchorHash && algos[scanConfig.anchorHash] ? scanConfig.anchorHash : null;
   const activeAlgos = Object.entries(algos).filter(([k, v]) => v && k !== 'md5').map(([k]) => k);
+  const needed = matchLogic === 'and' ? activeAlgos.length
+               : matchLogic === 'or'  ? 1
+               :                        Math.max(1, ensureMin);
 
-  if (!activeAlgos.length || !perceptual.length) {
-    groups.sort((a, b) => b.confidence - a.confidence);
-    return groups;
+  // Stable priority order: lowest folderIndex first, then original order.
+  const files = hashedFiles
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => ((a.f.folderIndex || 0) - (b.f.folderIndex || 0)) || (a.i - b.i))
+    .map(x => x.f);
+  const n = files.length;
+  const uf = makeUnionFind(n);
+
+  // ── Step 1: byte-identical files (MD5) ────────────────────────────────────
+  const md5First = new Map();
+  for (let i = 0; i < n; i++) {
+    const m = files[i].md5;
+    if (!m) continue;
+    if (md5First.has(m)) uf.union(md5First.get(m), i);
+    else md5First.set(m, i);
   }
 
-  // Build nibble index per algorithm
-  const indexes = {};
-  for (const algo of activeAlgos) {
-    indexes[algo] = buildNibbleIndex(perceptual, algo);
+  // ── Step 2: perceptual all-pairs ──────────────────────────────────────────
+  // Only one representative per MD5 is compared (copies inherit its matches
+  // through the union-find), which also saves time.
+  const reps = [];
+  for (let i = 0; i < n; i++) {
+    const m = files[i].md5;
+    if (!m || md5First.get(m) === i) reps.push(i);
   }
 
-  const assigned = new Set(resumeAssigned);
-  const degenerate = new Set();
-  const sorted = [...perceptual].sort((a, b) => (a.folderIndex || 0) - (b.folderIndex || 0));
+  if (activeAlgos.length && needed <= activeAlgos.length && reps.length > 1) {
+    // Check the shortest (cheapest) hash first so most pairs are rejected early.
+    const lenOf = algo => { for (const k of reps) if (files[k][algo]) return files[k][algo].length; return Infinity; };
+    const cmpAlgos = activeAlgos.slice().sort((a, b) => lenOf(a) - lenOf(b));
+    const A = cmpAlgos.length;
+    const packed = cmpAlgos.map(algo => files.map(f => packHex(f[algo])));
+    const hexLen = cmpAlgos.map(algo => files.map(f => (f[algo] || '').length));
+    const thr    = cmpAlgos.map(algo => thresholds[algo] ?? 10);
+    const anchorIdx = anchorHash ? cmpAlgos.indexOf(anchorHash) : -1;
 
-  // Mark degenerate hashes (near-solid images — too few or too many bits set)
-  for (const file of sorted) {
-    if (activeAlgos.every(algo => {
-      const h = file[algo];
-      if (!h) return true;
-      let bits = 0;
-      for (const c of h) { let x = parseInt(c, 16); while (x) { x &= x - 1; bits++; } }
-      return bits < 5 || bits > 59;
-    })) degenerate.add(file.path);
-  }
+    // Skip files whose every hash is degenerate (near-solid images).
+    const usable = reps.filter(i => !cmpAlgos.every((_, a) => isDegenerate(packed[a][i], hexLen[a][i])));
+    const R = usable.length;
+    const YIELD_ROWS = Math.max(1, Math.floor(2e6 / Math.max(R, 1))); // ~2M pair checks per slice
 
-  for (let si = resumeIndex; si < sorted.length; si++) {
-    // Yield event loop every YIELD_EVERY iterations so WS/HTTP can run
-    if (si > 0 && si % YIELD_EVERY === 0) {
-      await new Promise(r => setImmediate(r));
-      // Pass resume state so checkpoint can be saved
-      onProgress?.(si, sorted.length, groups.length, groups, {
-        assignedPaths: [...assigned],
-        startIndex: si
-      });
-    }
-
-    const source = sorted[si];
-    if (assigned.has(source.path) || degenerate.has(source.path)) continue;
-
-    const candidateScore = new Map();
-
-    for (const algo of activeAlgos) {
-      const h = source[algo];
-      if (!h || h.length < 16) continue;
-      const thresh = thresholds[algo] ?? 10;
-      const cands  = getCandidates(si, h, indexes[algo], scanConfig.searchDepth || 1);
-
-      for (const ci of cands) {
-        const candidate = sorted[ci];
-        if (assigned.has(candidate.path)) continue;
-        if (!candidate[algo]) continue;
-        const dist = hammingDistance(h, candidate[algo]);
-        if (dist > thresh) continue;
-        if (!candidateScore.has(candidate.path))
-          candidateScore.set(candidate.path, { file: candidate, matchCount: 0, distances: {} });
-        const entry = candidateScore.get(candidate.path);
-        entry.matchCount++;
-        entry.distances[algo] = dist;
+    for (let x = 0; x < R; x++) {
+      if (x > 0 && x % YIELD_ROWS === 0) {
+        await new Promise(r => setImmediate(r));
+        onProgress?.(x, R, 0, null, null);
+      }
+      const i = usable[x];
+      for (let y = x + 1; y < R; y++) {
+        const j = usable[y];
+        let matched = 0;
+        let ok = true;
+        for (let a = 0; a < A; a++) {
+          const hi = packed[a][i], hj = packed[a][j];
+          let hit = false;
+          if (hi && hj && hexLen[a][i] === hexLen[a][j]) {
+            let d = 0;
+            const lim = thr[a];
+            for (let w = 0; w < hi.length && d <= lim; w++) d += popcount32(hi[w] ^ hj[w]);
+            hit = d <= lim;
+          }
+          if (hit) matched++;
+          else if (a === anchorIdx || matchLogic === 'and') { ok = false; break; }
+          if (matched >= needed && anchorIdx < 0) break;                 // enough evidence
+          if (matched + (A - a - 1) < needed) { ok = false; break; }     // can't reach it anymore
+        }
+        if (ok && matched >= needed) uf.union(i, j);
       }
     }
-
-    const matches = [];
-    for (const [, entry] of candidateScore) {
-      const qualifies = matchLogic === 'and'  ? entry.matchCount === activeAlgos.length
-                      : matchLogic === 'or'   ? entry.matchCount >= 1
-                      :                         entry.matchCount >= ensureMin;
-      if (qualifies) matches.push(entry);
-    }
-
-    if (!matches.length) continue;
-
-    assigned.add(source.path);
-    matches.forEach(m => assigned.add(m.file.path));
-
-    const avgMatch   = matches.reduce((s, m) => s + m.matchCount, 0) / matches.length;
-    const confidence = avgMatch >= 3 ? CONFIDENCE.CERTAIN
-                     : avgMatch >= 2 ? CONFIDENCE.PROBABLE
-                     :                 CONFIDENCE.UNCERTAIN;
-
-    groups.push(makeGroup(source, matches.map(m => m.file), confidence, false, matches.map(m => m.distances)));
+    onProgress?.(R, R, 0, null, null);
   }
 
-  groups.sort((a, b) => b.confidence - a.confidence || (b.matches||[]).length - (a.matches||[]).length);
+  // ── Step 3: components → groups ───────────────────────────────────────────
+  const comps = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = uf.find(i);
+    if (!comps.has(r)) comps.set(r, []);
+    comps.get(r).push(i);
+  }
+
+  const groups = [];
+  for (const members of comps.values()) {
+    if (members.length < 2) continue;
+    // members are in priority order (union-find keeps the smallest index as root,
+    // and we pushed in index order), so members[0] is the source.
+    const source = files[members[0]];
+    const matchFiles = [];
+    const perMatch   = [];
+    for (const k of members.slice(1)) {
+      const f = files[k];
+      const r = areDuplicates(source, f, scanConfig);
+      const distances = r.distances || {};
+      if (!r.distances) {
+        for (const algo of activeAlgos) if (source[algo] && f[algo]) distances[algo] = hammingDistance(source[algo], f[algo]);
+      }
+      matchFiles.push(f);
+      perMatch.push({
+        md5:        !!(source.md5 && f.md5 && source.md5 === f.md5),
+        // Members linked only through another file (A~B~C) get UNCERTAIN vs the source.
+        confidence: r.match ? r.confidence : CONFIDENCE.UNCERTAIN,
+        distances
+      });
+    }
+    const groupConfidence = Math.min(...perMatch.map(m => m.md5 ? CONFIDENCE.CERTAIN : m.confidence));
+    groups.push(makeGroup(source, matchFiles, groupConfidence, perMatch));
+  }
+
+  groups.sort((a, b) => b.confidence - a.confidence || (b.matches || []).length - (a.matches || []).length);
   return groups;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function makeGroup(source, matchFiles, confidence, md5Match, distancesArr) {
+function makeGroup(source, matchFiles, confidence, perMatch) {
   return {
     id:              'g_' + Math.random().toString(36).slice(2) + '_' + Date.now(),
     confidence,
@@ -256,9 +242,9 @@ function makeGroup(source, matchFiles, confidence, md5Match, distancesArr) {
     source_info:     fileInfo(source),
     matches:         matchFiles.map((f, i) => ({
       path:       f.path,
-      md5_match:  md5Match,
-      confidence,
-      distances:  distancesArr?.[i] || {},
+      md5_match:  perMatch[i].md5,
+      confidence: perMatch[i].md5 ? CONFIDENCE.CERTAIN : perMatch[i].confidence,
+      distances:  perMatch[i].distances,
       size:       f.size,
       size_fmt:   fmtSize(f.size),
       width:      f.width  || 0,
@@ -297,5 +283,5 @@ function calcMP(w, h) {
   return Math.round((w * h) / 100000) / 10;
 }
 
-const MAX_GROUP_SIZE = 999999;
+const MAX_GROUP_SIZE = 999999; // kept for API compatibility; groups are not capped
 module.exports = { buildGroups, areDuplicates, CONFIDENCE, confidenceLabel, MAX_GROUP_SIZE };
