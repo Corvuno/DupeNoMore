@@ -104,27 +104,29 @@ function phash(pixels, size) {
   return bitsToHex(topLeft.map(v => v >= median ? 1 : 0));
 }
 
-// wHash: wavelet hash (simplified Haar)
+// wHash: wavelet hash (Haar low-pass). Each level replaces every 2x2 block
+// by its average (the Haar LL band) until 8x8 remains; those 64 coefficients
+// are thresholded at their median. compareSize is 8, 16 or 32 (powers of 2).
+// Note: this Haar LL band equals the 8x8 block mean, so for bhashMode 'fast'
+// wHash and bHash give the same bits.
 function whash(pixels, size) {
-  let data = [...pixels];
-  const levels = Math.log2(size);
-  for (let l = 0; l < levels; l++) {
-    const half = size >> (l + 1);
-    const newData = new Array(data.length).fill(0);
-    for (let i = 0; i < half; i++) {
-      for (let j = 0; j < half; j++) {
-        const a = data[2 * i * (size >> l) + 2 * j] || 0;
-        const b = data[2 * i * (size >> l) + 2 * j + 1] || 0;
-        const c = data[(2 * i + 1) * (size >> l) + 2 * j] || 0;
-        const d = data[(2 * i + 1) * (size >> l) + 2 * j + 1] || 0;
-        newData[i * (size >> l) + j] = (a + b + c + d) / 4;
+  let data = Float64Array.from(pixels);
+  let side = size;
+  while (side > 8) {
+    const half = side >> 1;
+    const next = new Float64Array(half * half);
+    for (let y = 0; y < half; y++) {
+      for (let x = 0; x < half; x++) {
+        const i = 2 * y * side + 2 * x;
+        next[y * half + x] = (data[i] + data[i + 1] + data[i + side] + data[i + side + 1]) / 4;
       }
     }
-    data = newData;
+    data = next;
+    side = half;
   }
-  const low = data.slice(0, 64);
-  const avg = low.reduce((a, b) => a + b, 0) / low.length;
-  return bitsToHex(low.map(v => v >= avg ? 1 : 0));
+  const low = Array.from(data.slice(0, 64));
+  const median = low.slice().sort((a, b) => a - b)[32];
+  return bitsToHex(low.map(v => v >= median ? 1 : 0));
 }
 
 // mHash: pattern/marr hash
