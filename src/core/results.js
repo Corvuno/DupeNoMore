@@ -117,4 +117,21 @@ function loadOverrides(dataDir, resultFile) {
   } catch { return {}; }
 }
 
-module.exports = { getResultFiles, loadResult, deleteResult, filterGroups, saveOverrides, loadOverrides };
+// Save/load the groups the user deselected in the review screen (by group source path)
+function saveDeselectedGroups(dataDir, resultFile, sources) {
+  const p = path.join(dataDir, 'deselected-groups.json');
+  let all = {};
+  try { all = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+  const list = Array.isArray(sources) ? sources.filter(s => typeof s === 'string') : [];
+  if (list.length) all[resultFile] = list; else delete all[resultFile];
+  fs.writeFileSync(p, JSON.stringify(all, null, 2));
+}
+
+function loadDeselectedGroups(dataDir, resultFile) {
+  try {
+    const all = JSON.parse(fs.readFileSync(path.join(dataDir, 'deselected-groups.json'), 'utf8'));
+    return Array.isArray(all[resultFile]) ? all[resultFile] : [];
+  } catch { return []; }
+}
+
+module.exports = { getResultFiles, loadResult, deleteResult, filterGroups, saveOverrides, loadOverrides, saveDeselectedGroups, loadDeselectedGroups };
