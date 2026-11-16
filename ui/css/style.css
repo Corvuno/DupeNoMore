@@ -99,6 +99,12 @@ body {
 .tb-scan-live::before { content: '⟳'; display: inline-block; animation: spin 1.2s linear infinite; }
 .tb-scan-live { font-size: 0; }
 .tb-scan-live::before, .tb-scan-live > span { font-size: 13px; }
+/* Finished scan waiting to be reviewed, or a failed scan: no spinner. */
+.tb-scan-live.tb-scan-review { color: var(--accent) !important; }
+.tb-scan-live.tb-scan-review:hover { background: var(--accent-glow) !important; }
+.tb-scan-live.tb-scan-failed { color: var(--red) !important; }
+.tb-scan-live.tb-scan-failed:hover { background: var(--red-bg) !important; }
+.tb-scan-live.tb-scan-review::before, .tb-scan-live.tb-scan-failed::before { content: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .tb-nav { display: flex; gap: 4px; margin-left: 12px; }
 .tb-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
