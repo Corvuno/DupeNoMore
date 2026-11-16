@@ -20,7 +20,7 @@ const Page_welcome = (() => {
         <h1 class="welcome-h1">${firstTime ? 'Welcome to DupeNoMore' : 'Ready when you are'}</h1>
         <p class="welcome-sub">${firstTime
           ? 'Find and clean up duplicate photos and videos across your folders — without deleting anything by accident.'
-          : 'Set up a new scan on the left, or open a previous scan to keep reviewing.'}</p>
+          : 'Start a new scan, or open a previous one under Recent scans to keep reviewing.'}</p>
 
         ${firstTime ? `
           <div class="welcome-steps">

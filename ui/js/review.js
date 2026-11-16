@@ -39,7 +39,9 @@ const Page_review = (() => {
     }
     if (!currentFile) {
       const results = await API.getResults().catch(() => []);
-      if (results.length > 0) await loadFile(results[0].filename);
+      // A specific scan may have been asked for while the list was loading
+      // (opening a scan from Recent or from the top bar); don't overwrite it.
+      if (!currentFile && results.length > 0) await loadFile(results[0].filename);
     } else {
       await populateDropdown();
     }

@@ -37,7 +37,7 @@ const Page_run = (() => {
     if (!container.querySelector('#scan-cards-wrap')) {
       container.innerHTML = `
         <div class="page-title">Run</div>
-        <div class="page-subtitle">Active and completed scans. Browser can be closed — scans continue in background.</div>
+        <div class="page-subtitle">The scan in progress, or the last one that finished. Earlier scans are under Recent scans. You can close the browser; scans keep running.</div>
         <div id="scan-cards-wrap"></div>
         <div id="run-empty" class="empty-state">
           <div style="font-size:32px">◎</div>
@@ -65,11 +65,16 @@ const Page_run = (() => {
     draw();
   }
 
-  // Running and paused scans first, then the rest, newest first, so the scan
-  // you are waiting on is always at the top of the page.
+  // The Run page is about the scan of the moment: every running or paused scan,
+  // newest first. With none going, it shows the most recent finished one so its
+  // result and log stay one click away; older scans live under Recent scans.
   function sorted() {
-    const live = s => (s.status === 'running' || s.status === 'paused') ? 0 : 1;
-    return [..._scans.values()].sort((a, b) => live(a) - live(b) || (b.startedAt || 0) - (a.startedAt || 0));
+    const byNew = (a, b) => (b.startedAt || 0) - (a.startedAt || 0);
+    const all = [..._scans.values()];
+    const live = all.filter(s => s.status === 'running' || s.status === 'paused').sort(byNew);
+    if (live.length) return live;
+    const last = all.sort((a, b) => (b.finishedAt || b.startedAt || 0) - (a.finishedAt || a.startedAt || 0))[0];
+    return last ? [last] : [];
   }
 
   function draw() {
@@ -201,8 +206,7 @@ const Page_run = (() => {
                 // Save interim data as a named result so review can load it
                 const fn = await API.post('/results/save-interim', ir);
                 if (fn && fn.filename) {
-                  Nav.go('review');
-                  Page_review._loadFile(fn.filename);
+                  Shell.openReview(fn.filename);
                 } else {
                   toast('Could not save interim results','error');
                 }
@@ -215,10 +219,7 @@ const Page_run = (() => {
             draw();
             break;
           case 'review':
-            if (scan.resultFile) {
-              Page_review._loadFile?.(scan.resultFile.split(/[\\/]/).pop());
-              Nav.go('review');
-            }
+            if (scan.resultFile) Shell.openReview(scan.resultFile.split(/[\\/]/).pop());
             break;
           case 'copy-log': {
             const txt = (scan.log||[]).map(l=>`[${new Date(l.ts).toISOString()}] ${l.message}`).join('\n');
