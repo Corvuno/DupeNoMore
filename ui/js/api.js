@@ -104,7 +104,7 @@ const API = (() => {
 
     // Checkpoints
     getCheckpoints:   ()   => API.get('/checkpoints'),
-    resumeScan:       (id) => API.post(`/scans/resume/${id}`, {}),
+    resumeCheckpoint: (id) => API.post(`/scans/resume/${id}`, {}),
     deleteCheckpoint: (id) => API.del(`/checkpoints/${id}`),
     getInterim:       (id) => API.get(`/scans/${id}/interim`)
   };

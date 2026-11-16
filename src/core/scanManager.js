@@ -45,6 +45,13 @@ class ScanManager extends EventEmitter {
     if (running >= MAX_CONCURRENT_SCANS)
       throw new Error(`Maximum ${MAX_CONCURRENT_SCANS} concurrent scans reached`);
 
+    // Resuming a checkpoint reuses the scan's id. If that scan is still live in this
+    // session (running or paused), starting it again would replace its state and leave
+    // the first run orphaned, so refuse; a paused scan is continued with resume(id).
+    const existing = resumeCheckpointId && this.scans.get(resumeCheckpointId);
+    if (existing && (existing.status === 'running' || existing.status === 'paused'))
+      throw new Error('This scan is already running or paused; resume it instead of restarting it');
+
     const id = resumeCheckpointId || uuidv4();
     const state = {
       id,
