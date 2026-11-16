@@ -127,15 +127,19 @@ const History = (() => {
 
   async function loadCheckpoints() {
     try {
-      const cps = await API.getCheckpoints();
-      if (!cps || !cps.length) return;
+      // A checkpoint is written while a scan runs, so a scan that is still running or
+      // paused in this session also has one. Only the others were really interrupted.
+      const [all, live] = await Promise.all([API.getCheckpoints(), API.getScans().catch(() => [])]);
+      const busy = new Set(live.filter(s => s.status === 'running' || s.status === 'paused').map(s => s.id));
+      const cps = (all || []).filter(c => !busy.has(c.scanId));
+      if (!cps.length) return;
       // Prepend a resumable banner to the list
       const banner = document.createElement('div');
       banner.className = 'hd-resume';
       banner.innerHTML = `<span>⟳ ${cps.length} interrupted scan${cps.length>1?'s':''}</span><button class="hd-resume-btn">Resume</button>`;
       banner.querySelector('.hd-resume-btn').addEventListener('click', async () => {
-        await API.post('/scans/resume', { checkpoint: cps[0].file }).catch(()=>{});
-        Shell.openRun();
+        try { await API.resumeCheckpoint(cps[0].scanId); Shell.closeDrawer(); Shell.openRun(); }
+        catch (e) { toast('Could not resume: ' + e.message, 'error', 5000); }
       });
       container.prepend(banner);
     } catch {}

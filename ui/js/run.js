@@ -2,37 +2,38 @@
 'use strict';
 
 const Page_run = (() => {
-  let tickTimer = null;
   const PHASES  = ['collect', 'hash', 'compare', 'save'];
 
-  // ── WS event queue ──────────────────────────────────────────────────────────
-  // Events that arrive before the DOM exists are queued and flushed on first init
-  const _queue = [];
-  let   _ready = false;
+  // ── Live state ──────────────────────────────────────────────────────────────
+  // Every scan the server tells us about (over the WebSocket or a fetch) lands in
+  // _scans. Cards are redrawn at most once per animation frame, and only the cards
+  // whose scan changed, so a fast scan doesn't rebuild the page dozens of times a
+  // second (which also swallowed clicks on Pause/Kill mid-rebuild).
+  const _scans = new Map();
+  const _dirty = new Set();
+  let _frame = null;
+  let _setUp = false;
 
   function _handleState(scan) {
-    if (!scan) return;
-    if (!_ready) { _queue.push(scan); return; }
-    upsertCard(scan);
+    if (!scan || !scan.id) return;
+    _scans.set(scan.id, scan);
+    _dirty.add(scan.id);
+    if (!_frame) _frame = requestAnimationFrame(() => { _frame = null; draw(); });
   }
 
+  // Called once at app start, before the WebSocket connects, so the Run page is
+  // live whether or not it has been opened yet.
   function setup() {
-    WS.on('scan:started',  m => { _lastWsActivity = Date.now(); _handleState(m?.state); });
-    // Track WS activity for polling fallback
-    WS.on('scan:progress', m => { _lastWsActivity = Date.now(); _handleState(m?.state); });
-    WS.on('scan:log',      m => { _lastWsActivity = Date.now(); _handleState(m?.state); });
-    WS.on('scan:done',     m => _handleState(m?.state));
-    WS.on('scan:error',    m => _handleState(m?.state));
-    WS.on('scan:paused',   m => _handleState(m?.state));
-    WS.on('scan:resumed',  m => _handleState(m?.state));
-    WS.on('scan:aborted',  m => _handleState(m?.state));
-    WS.on('init',          m => { if (m?.scans) m.scans.forEach(s => _handleState(s)); });
-    tickTimer = setInterval(tickElapsed, 1000);
+    if (_setUp) return;
+    _setUp = true;
+    ['scan:started','scan:progress','scan:log','scan:done','scan:error','scan:paused','scan:resumed','scan:aborted']
+      .forEach(ev => WS.on(ev, m => _handleState(m?.state)));
+    WS.on('init', m => (m?.scans || []).forEach(_handleState));
+    setInterval(tickElapsed, 1000);
   }
 
   // ── Init ────────────────────────────────────────────────────────────────────
   function init(container) {
-    // Build shell if needed
     if (!container.querySelector('#scan-cards-wrap')) {
       container.innerHTML = `
         <div class="page-title">Run</div>
@@ -40,62 +41,57 @@ const Page_run = (() => {
         <div id="scan-cards-wrap"></div>
         <div id="run-empty" class="empty-state">
           <div style="font-size:32px">◎</div>
-          <p>No scans running. Click ▶ Scan in the nav bar to start one.</p>
+          <p>No scans running. Click ＋ New scan in the top bar to start one.</p>
         </div>
       `;
     }
-
-    _ready = true;
-
-    // Flush any events that arrived before DOM was ready
-    if (_queue.length > 0) {
-      _queue.forEach(s => upsertCard(s));
-      _queue.length = 0;
-    } else {
-      // Pull current state from server in case scan already running
-      renderAll();
-    }
+    setup();
+    renderAll();
   }
 
   function refresh(container) {
-    // Don't reinit (wipes live cards) — just update existing cards from server state
-    if (document.getElementById('scan-cards-wrap')) {
-      renderAll();
-    } else {
-      init(container);
-    }
+    if (document.getElementById('scan-cards-wrap')) renderAll();
+    else init(container);
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
+  // Pull the full list from the server (catches anything missed while the socket
+  // was down, and drops dismissed scans), then draw.
   async function renderAll() {
-    const wrap  = document.getElementById('scan-cards-wrap');
-    const empty = document.getElementById('run-empty');
-    if (!wrap) return;
-
-    let scans = [];
+    let scans;
     try { scans = await API.getScans(); } catch { return; }
-
-    if (scans.length === 0) {
-      wrap.innerHTML = '';
-      empty?.classList.remove('hidden');
-    } else {
-      empty?.classList.add('hidden');
-      wrap.innerHTML = '';
-      scans.forEach(s => wrap.appendChild(buildCard(s)));
-    }
+    _scans.clear();
+    scans.forEach(s => { _scans.set(s.id, s); _dirty.add(s.id); });
+    draw();
   }
 
-  function upsertCard(scan) {
+  // Running and paused scans first, then the rest, newest first, so the scan
+  // you are waiting on is always at the top of the page.
+  function sorted() {
+    const live = s => (s.status === 'running' || s.status === 'paused') ? 0 : 1;
+    return [..._scans.values()].sort((a, b) => live(a) - live(b) || (b.startedAt || 0) - (a.startedAt || 0));
+  }
+
+  function draw() {
     const wrap  = document.getElementById('scan-cards-wrap');
     const empty = document.getElementById('run-empty');
-    if (!wrap || !scan) return;
-    empty?.classList.add('hidden');
-    const existing = wrap.querySelector(`[data-scan-id="${scan.id}"]`);
-    if (existing) {
-      existing.replaceWith(buildCard(scan));
-    } else {
-      wrap.prepend(buildCard(scan));
-    }
+    if (!wrap) { _dirty.clear(); return; }
+    const list = sorted();
+    empty?.classList.toggle('hidden', list.length > 0);
+
+    const keep = new Set(list.map(s => s.id));
+    wrap.querySelectorAll('[data-scan-id]').forEach(c => { if (!keep.has(c.dataset.scanId)) c.remove(); });
+
+    list.forEach((scan, i) => {
+      let card = wrap.querySelector(`[data-scan-id="${scan.id}"]`);
+      if (!card || _dirty.has(scan.id)) {
+        const fresh = buildCard(scan);
+        if (card) card.replaceWith(fresh);
+        card = fresh;
+      }
+      if (wrap.children[i] !== card) wrap.insertBefore(card, wrap.children[i] || null);
+    });
+    _dirty.clear();
   }
 
   // ── Card ────────────────────────────────────────────────────────────────────
@@ -215,7 +211,8 @@ const Page_run = (() => {
             break;
           case 'dismiss':
             await API.dismissScan(scan.id).catch(()=>{});
-            renderAll();
+            _scans.delete(scan.id);
+            draw();
             break;
           case 'review':
             if (scan.resultFile) {
@@ -244,8 +241,8 @@ const Page_run = (() => {
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function tickElapsed() {
-    document.querySelectorAll('.elapsed-timer:not([data-finished])').forEach(s => {
-      if (s.dataset.finished) return;
+    // data-finished is always present; it is empty while the scan is still going.
+    document.querySelectorAll('.elapsed-timer[data-finished=""]').forEach(s => {
       const started = parseInt(s.dataset.started);
       if (started) s.textContent = fmtDur(Date.now() - started);
     });

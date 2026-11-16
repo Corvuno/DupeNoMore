@@ -127,12 +127,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const liveBtn = el('tb-live'), liveLabel = el('tb-live-label');
   const activeScans = new Map();
   function refreshLive() {
-    const running = [...activeScans.values()].filter(s => s && (s.status === 'running' || s.status === 'scanning' || s.phase === 'hash' || s.phase === 'compare' || s.phase === 'collect'));
+    const running = [...activeScans.values()].filter(s => s && (s.status === 'running' || s.status === 'paused'));
     if (running.length) {
       liveBtn?.classList.remove('hidden');
       const s = running[0];
       const pct = s.progress?.total ? Math.round((s.progress.current / s.progress.total) * 100) : null;
-      if (liveLabel) liveLabel.textContent = running.length > 1 ? `${running.length} scans…` : (pct != null ? `Scanning ${pct}%` : 'Scanning…');
+      const verb = s.status === 'paused' ? 'Paused' : 'Scanning';
+      if (liveLabel) liveLabel.textContent = running.length > 1 ? `${running.length} scans…` : (pct != null ? `${verb} ${pct}%` : `${verb}…`);
     } else {
       liveBtn?.classList.add('hidden');
     }
@@ -151,6 +152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     .forEach(ev => WS.on(ev, m => onScanState(m?.state)));
   WS.on('init', m => { (m?.scans || []).forEach(onScanState); });
 
+  Page_run.setup();   // Run page listens from the start, not only once it is opened
   WS.connect();
   try {
     const health = await API.get('/health');

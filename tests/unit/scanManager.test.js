@@ -189,4 +189,17 @@ describe('ScanManager', () => {
     const s = await waitDone(manager, id, 10000);
     expect(s.status).toBe('done');
   }, 30000);
+  test('resuming a checkpoint of a scan that is still running or paused is refused, not started twice', async () => {
+    const manager = getManager();
+    const dir = path.join(tmpDir, 'imgs');
+    await makeImages(dir, 24);
+    const cfg = { ...EMPTY_CONFIG, folders: [{ path: dir, active: true, recursive: true, index: 0 }] };
+    const id = await manager.start(cfg);
+    manager.pause(id);
+    await expect(manager.start(cfg, id)).rejects.toThrow(/already/i);
+    expect(manager.get(id).status).toBe('paused');
+    manager.resume(id);
+    const s = await waitDone(manager, id, 10000);
+    expect(s.status).toBe('done');
+  }, 30000);
 });
