@@ -187,8 +187,11 @@ async function executeActions(resultFile, actionSpec, dryRun = false) {
   const log    = [];
   const stats  = { recycled: 0, moved: 0, deleted: 0, kept: 0, skipped: 0, errors: 0 };
 
-  const { actions, removeTarget, keepTarget, reproduceStructure, selections, locked, deselectFilters } = actionSpec;
+  const { actions, removeTarget, keepTarget, reproduceStructure, selections, locked, deselectFilters, deselectedGroups } = actionSpec;
   const lockedSet = new Set(locked || []);
+  // Groups the user unticked in the review screen, identified by their source path.
+  // Every file in such a group is left untouched (not removed, not moved).
+  const deselectedSet = new Set(deselectedGroups || []);
 
   // Auto-populate selections for groups where none are set
   const effectiveSelections = { ...(selections || {}) };
@@ -204,6 +207,14 @@ async function executeActions(resultFile, actionSpec, dryRun = false) {
   }
 
   for (const group of result.groups) {
+    if (deselectedSet.has(group.source)) {
+      const paths = [group.source, ...(group.matches || []).map(m => m.path)];
+      for (const p of paths) {
+        log.push({ file: p, action: 'skipped', reason: 'group deselected', ts: Date.now() });
+        stats.skipped++;
+      }
+      continue;
+    }
     const conf     = group.confidenceLabel || 'certain';
     const strategy = actions[conf] || 'keep_in_place';
 

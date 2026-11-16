@@ -186,3 +186,38 @@ describe('collectFiles', () => {
     }
   });
 });
+
+describe('collectFiles — exclude patterns on file names', () => {
+  const root = () => [{ path: tmpDir, active: true, recursive: true, index: 0 }];
+  const names = files => files.map(f => path.basename(f.path)).sort();
+
+  test('exact file name is excluded (case-insensitive)', async () => {
+    write('keep.jpg'); write('sub/Thumbs.JPG');
+    const files = await collectFiles(root(), { ...BASE_FILTERS, excludePatterns: ['thumbs.jpg'] });
+    expect(names(files)).toEqual(['keep.jpg']);
+  });
+
+  test('* and ? wildcards match file names', async () => {
+    write('IMG_0012.jpg'); write('IMG_1012.jpg'); write('photo_thumb.png');
+    const files = await collectFiles(root(), { ...BASE_FILTERS, excludePatterns: ['IMG_00??.jpg', '*_thumb*'] });
+    expect(names(files)).toEqual(['IMG_1012.jpg']);
+  });
+
+  test('a file-name pattern does not exclude a whole folder with a similar name', async () => {
+    write('thumbs/a.jpg');
+    const files = await collectFiles(root(), { ...BASE_FILTERS, excludePatterns: ['*_thumb*'] });
+    expect(names(files)).toEqual(['a.jpg']);
+  });
+
+  test('folder patterns still exclude folders', async () => {
+    write('Backup/old/a.jpg'); write('b.jpg');
+    const files = await collectFiles(root(), { ...BASE_FILTERS, excludePatterns: ['Backup'] });
+    expect(names(files)).toEqual(['b.jpg']);
+  });
+
+  test('a pattern with a path separator matches files by full path', async () => {
+    write('x/a.png'); write('y/a.png');
+    const files = await collectFiles(root(), { ...BASE_FILTERS, excludePatterns: ['/x/*.png'] });
+    expect(files.map(f => f.path)).toEqual([path.join(tmpDir, 'y', 'a.png')]);
+  });
+});

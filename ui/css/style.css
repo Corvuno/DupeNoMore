@@ -716,3 +716,10 @@ input[type="checkbox"].toggle:checked::after { transform: translateX(16px); }
   color: var(--text);
   margin-right: 4px;
 }
+
+/* Group select checkbox (review): unticked groups are skipped by actions */
+.group-select { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.group-select input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); }
+.group-desel-label { font-size: 11px; font-weight: 600; color: var(--orange); }
+.review-group.group-deselected { border-style: dashed; }
+.review-group.group-deselected .review-cards-row { opacity: 0.4; }
