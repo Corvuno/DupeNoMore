@@ -53,7 +53,7 @@ const Page_review = (() => {
     container.innerHTML = `
       <div id="review-toolbar" style="position:sticky;top:0;z-index:50;background:var(--bg)">
       <!-- Row 1: Result picker + confidence filters + match% + hi-fi + actions -->
-      <div class="filter-bar" id="review-filter-bar" style="flex-wrap:wrap;gap:6px 10px">
+      <div class="filter-bar" id="review-filter-bar" style="position:static;flex-wrap:wrap;gap:6px 10px">
         <select id="review-result-select" class="select" style="max-width:260px">
           <option value="">— Select result —</option>
         </select>
@@ -140,7 +140,7 @@ const Page_review = (() => {
         <button class="btn btn-ghost btn-xs" id="filter-empty-btn">－ Empty groups</button>
       </div>
 
-      <div id="actions-panel" class="hidden" style="padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg-2)">
+      <div id="actions-panel" class="hidden" style="padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg-2);max-height:55vh;overflow-y:auto;overscroll-behavior:contain">
         ${buildActionsPanel()}
       </div>
 

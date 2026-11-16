@@ -368,7 +368,8 @@ label { font-size: 12px; font-weight: 500; color: var(--text-2); display: block;
 /* ─── Filter bar ──────────────────────────────────────────────────────────── */
 .filter-bar {
   flex-wrap: wrap;
-  position: sticky; top: var(--nav-h); z-index: 50;
+  /* #content (below the topbar) is the scroll container, so stick at 0, not --nav-h */
+  position: sticky; top: 0; z-index: 50;
   background: var(--bg-2); border-bottom: 1px solid var(--border);
   padding: 10px 24px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
 }
