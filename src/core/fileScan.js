@@ -12,6 +12,7 @@
 const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
+const { isExcluded } = require('./collector');
 
 // ── Copy patterns ─────────────────────────────────────────────────────────────
 // These are stripped before comparing basenames
@@ -116,22 +117,23 @@ function matchesWildcardSet(filePath, patterns, logic = 'or') {
 }
 
 // ── File collection ───────────────────────────────────────────────────────────
-async function collectFiles(folders, { extensions, minSizeKB, maxSizeMB, includeHidden = false }) {
+async function collectFiles(folders, { extensions, minSizeKB, maxSizeMB, includeHidden = false, excludePatterns = [] }) {
   const files = [];
   for (const folder of folders.filter(f => f.active !== false)) {
-    await walkDir(folder.path, folder.recursive !== false, files, extensions, minSizeKB, maxSizeMB, includeHidden);
+    await walkDir(folder.path, folder.recursive !== false, files, extensions, minSizeKB, maxSizeMB, includeHidden, excludePatterns);
   }
   return files;
 }
 
-async function walkDir(dir, recursive, results, extensions, minSizeKB, maxSizeMB, includeHidden) {
+async function walkDir(dir, recursive, results, extensions, minSizeKB, maxSizeMB, includeHidden, excludePatterns) {
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const e of entries) {
       if (!includeHidden && e.name.startsWith('.')) continue;
       const full = path.join(dir, e.name);
+      if (isExcluded(full, excludePatterns, e.isDirectory())) continue;
       if (e.isDirectory()) {
-        if (recursive) await walkDir(full, true, results, extensions, minSizeKB, maxSizeMB, includeHidden);
+        if (recursive) await walkDir(full, true, results, extensions, minSizeKB, maxSizeMB, includeHidden, excludePatterns);
       } else if (e.isFile()) {
         const ext = path.extname(e.name).slice(1).toLowerCase();
         if (extensions && extensions.length && !extensions.includes(ext)) continue;
@@ -167,11 +169,12 @@ async function scanFiles({
   wildcardPatterns = [],
   wildcardLogic    = 'or',
   useVersionGroups = false,
+  excludePatterns  = [],
   onProgress,
 }) {
   // 1. Collect
   onProgress?.('collect', 0, 0, 'Collecting files…');
-  const files = await collectFiles(folders, { extensions, minSizeKB, maxSizeMB });
+  const files = await collectFiles(folders, { extensions, minSizeKB, maxSizeMB, excludePatterns });
   onProgress?.('collect', files.length, files.length, `Collected ${files.length} files`);
 
   if (!files.length) return { groups: [], totalFiles: 0 };

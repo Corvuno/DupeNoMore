@@ -8,6 +8,9 @@ const Page_review = (() => {
   let visConf     = { certain: true, probable: true, uncertain: true };
   let showMultiKeep = false;
   let showNoSel     = false;
+  let showDeselOnly = false;
+  // Groups the user unticked: skipped entirely when actions run. Keyed by group source path.
+  let deselectedGroups = new Set();
   let actionsOpen   = false;
 
   // Filter state (must be before wireBar)
@@ -64,6 +67,7 @@ const Page_review = (() => {
         <div class="sep"></div>
         <button class="chip" id="chip-multi-keep">Multi-keep</button>
         <button class="chip" id="chip-no-sel">No selection</button>
+        <button class="chip" id="chip-desel-only" title="Show only groups you deselected">Deselected</button>
         <div class="sep"></div>
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-2);cursor:default">
           Match
@@ -118,6 +122,10 @@ const Page_review = (() => {
         <button class="btn btn-ghost btn-xs" data-sel="remove_all">Remove all</button>
         <button class="btn btn-ghost btn-xs" data-sel="invert">Invert</button>
         <div class="sep" style="height:16px;margin:0 2px"></div>
+        <span class="text-muted text-sm" style="white-space:nowrap">Groups:</span>
+        <button class="btn btn-ghost btn-xs" data-sel="select_groups" title="Tick all visible groups so actions apply to them">☑ Select visible</button>
+        <button class="btn btn-ghost btn-xs" data-sel="deselect_groups" title="Untick all visible groups — actions will skip them entirely">☐ Deselect visible</button>
+        <div class="sep" style="height:16px;margin:0 2px"></div>
         <button class="btn btn-ghost btn-xs" data-sel="ignore_visible" title="Add all visible groups to the ignore list — they won't appear in future reviews">🚫 Ignore visible</button>
         <div class="sep" style="height:16px;margin:0 2px"></div>
         <span class="text-muted text-sm" style="white-space:nowrap">Match%:</span>
@@ -138,6 +146,7 @@ const Page_review = (() => {
         <button class="btn btn-ghost btn-xs" id="filter-folder-btn">－ Filter folder out</button>
         <button class="btn btn-ghost btn-xs" id="filter-singletons-btn">－ Singletons</button>
         <button class="btn btn-ghost btn-xs" id="filter-empty-btn">－ Empty groups</button>
+        <button class="btn btn-ghost btn-xs" id="filter-missing-btn" title="Check every file in this result still exists on disk; drop missing files and groups that are no longer duplicates">🔍 Re-check files on disk</button>
       </div>
 
       <div id="actions-panel" class="hidden" style="padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg-2);max-height:55vh;overflow-y:auto;overscroll-behavior:contain">
@@ -260,11 +269,13 @@ const Page_review = (() => {
     });
     el('chip-multi-keep')?.addEventListener('click', () => { showMultiKeep=!showMultiKeep; el('chip-multi-keep').classList.toggle('active',showMultiKeep); applyFilters(); });
     el('chip-no-sel')?.addEventListener('click',      () => { showNoSel=!showNoSel; el('chip-no-sel').classList.toggle('active',showNoSel); applyFilters(); });
+    el('chip-desel-only')?.addEventListener('click',  () => { showDeselOnly=!showDeselOnly; el('chip-desel-only').classList.toggle('active',showDeselOnly); applyFilters(); });
     container.querySelectorAll('[data-sel]').forEach(b => b.addEventListener('click', () => applySelAction(b.dataset.sel)));
     container.querySelectorAll('[data-folder-action]').forEach(b => b.addEventListener('click', () => applyFolderAction(b.dataset.folderAction)));
     el('filter-folder-btn')?.addEventListener('click', filterFolderOut);
     el('filter-singletons-btn')?.addEventListener('click', () => filterFromFile('singletons'));
     el('filter-empty-btn')?.addEventListener('click', () => filterFromFile('empty'));
+    el('filter-missing-btn')?.addEventListener('click', recheckMissing);
     el('filter-pct-below')?.addEventListener('click', async () => {
       const val = prompt('Remove groups where best match is BELOW this %.\n\n84% = dhash threshold boundary.\nEnter 0-100:');
       if (val === null) return;
@@ -353,11 +364,11 @@ const Page_review = (() => {
 
     // Auto-save on page leave / browser close
     window.addEventListener('beforeunload', () => {
-      if (currentFile && Object.keys(overrides).length) {
+      if (currentFile && (Object.keys(overrides).length || deselectedGroups.size)) {
         fetch('/api/results/' + encodeURIComponent(currentFile) + '/overrides', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ overrides }),
+          body: JSON.stringify({ overrides, deselectedGroups: [...deselectedGroups] }),
           keepalive: true
         }).catch(() => {});
       }
@@ -546,6 +557,7 @@ const Page_review = (() => {
       ignoreEntries.forEach(e => { if (e.paths.length === 1) ignoredFiles.add(e.paths[0]); });
       if (ignoredFiles.size) console.log('[ignore] ' + ignoredFiles.size + ' individually ignored files');
       overrides = data.overrides || {};
+      deselectedGroups = new Set(data.deselectedGroups || []);
       locked = {};
       applyDefaults();
       await populateDropdown();
@@ -631,6 +643,7 @@ const Page_review = (() => {
   function getVisible() {
     return groups.filter(g => {
       if (!visConf[g.confidenceLabel||'certain']) return false;
+      if (showDeselOnly && !deselectedGroups.has(g.source)) return false;
       if (showMultiKeep||showNoSel) {
         const keeps = allFiles(g).filter(f=>overrides[f.path]!=='remove').length;
         if (showMultiKeep && keeps<=1) return false;
@@ -675,10 +688,12 @@ const Page_review = (() => {
 
   function updateStats(visible) {
     const c2 = el('review-count');
-    if (c2) c2.textContent = visible.length + ' of ' + groups.length + ' groups';
+    const deselCount = groups.filter(g => deselectedGroups.has(g.source)).length;
+    if (c2) c2.textContent = visible.length + ' of ' + groups.length + ' groups' + (deselCount ? ' · ' + deselCount + ' deselected' : '');
 
     let removeBytes = 0, removeCount = 0, reviewedCount = 0;
     for (const g of groups) {
+      if (deselectedGroups.has(g.source)) continue;  // skipped by actions, so no savings
       const files = allFiles(g);
       let hasDecision = false;
       for (const f of files) {
@@ -774,7 +789,8 @@ const Page_review = (() => {
 
   function buildGroupEl(group) {
     const div = document.createElement('div');
-    div.className = 'review-group';
+    const isDesel = deselectedGroups.has(group.source);
+    div.className = 'review-group' + (isDesel ? ' group-deselected' : '');
     div.dataset.groupId = group.id;
     const files = allFiles(group);
     const hasMd5 = files.some(f=>f.md5_match);
@@ -799,6 +815,10 @@ const Page_review = (() => {
 
     const headerHtml = '<div class="review-group-header" style="justify-content:space-between;flex-wrap:wrap;gap:6px">' +
       '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<label class="group-select" title="Untick to skip this whole group when actions run">' +
+        '<input type="checkbox" class="group-select-cb"' + (isDesel ? '' : ' checked') + '>' +
+        '<span class="group-desel-label">' + (isDesel ? 'Skipped' : '') + '</span>' +
+      '</label>' +
       '<span class="confidence-badge ' + (group.confidenceLabel||'certain') + '">' + (group.confidenceLabel||'certain') + '</span>' +
       '<span class="text-muted text-sm">' + files.length + ' files</span>' +
       (hasMd5 ? '<span class="badge-md5">MD5✓</span>' : '') +
@@ -839,6 +859,14 @@ const Page_review = (() => {
         applyFilters();
       });
       // Click thumbnail to zoom
+    });
+
+    // Group select checkbox: unticked groups are skipped entirely by actions
+    div.querySelector('.group-select-cb')?.addEventListener('change', e => {
+      setGroupSelected(group, e.target.checked);
+      persistDeselected();
+      if (showDeselOnly) applyFilters();
+      else { syncGroupEl(div, group); updateStats(getVisible()); }
     });
 
     // Ignore group button
@@ -946,6 +974,26 @@ const Page_review = (() => {
     });
 
     return div;
+  }
+
+  function setGroupSelected(group, selected) {
+    if (selected) deselectedGroups.delete(group.source);
+    else deselectedGroups.add(group.source);
+  }
+
+  // Quiet save after a single checkbox toggle (the 💾 button toasts; this should not)
+  function persistDeselected() {
+    if (!currentFile) return;
+    API.saveOverrides(currentFile, overrides, [...deselectedGroups]).catch(e => toast(e.message, 'error'));
+  }
+
+  function syncGroupEl(div, group) {
+    const isDesel = deselectedGroups.has(group.source);
+    div.classList.toggle('group-deselected', isDesel);
+    const cb = div.querySelector('.group-select-cb');
+    if (cb) cb.checked = !isDesel;
+    const lbl = div.querySelector('.group-desel-label');
+    if (lbl) lbl.textContent = isDesel ? 'Skipped' : '';
   }
 
   function isGroupIgnored(groupPaths) {
@@ -1396,6 +1444,15 @@ const Page_review = (() => {
       } catch(e) { toast(e.message, 'error'); }
       return;
     }
+    if (action === 'select_groups' || action === 'deselect_groups') {
+      const sel = action === 'select_groups';
+      const vis = getVisible();
+      vis.forEach(g => setGroupSelected(g, sel));
+      applyFilters();
+      persistDeselected();
+      toast((sel ? 'Selected ' : 'Deselected ') + vis.length + ' visible groups', 'success', 2000);
+      return;
+    }
     if (action === 'auto_optimal') {
       getVisible().forEach(g => selectOptimal(g));
       container.querySelectorAll('.rev-card').forEach(card => updateCard(card, card.dataset.path, card.dataset.conf));
@@ -1462,9 +1519,23 @@ const Page_review = (() => {
     } catch(e) { toast(e.message, 'error'); }
   }
 
+  // Files moved or deleted outside the app since the scan: drop them from the result
+  async function recheckMissing() {
+    if (!currentFile) { toast('No result loaded.', 'error'); return; }
+    if (!await confirm('Re-check files on disk', 'Check every file in this result still exists?\nMissing files are removed from their groups, and groups with fewer than two files left are removed. This changes the result file.', 'Check')) return;
+    try {
+      await saveOverrides();
+      const r = await API.filterResult(currentFile, 'missing');
+      toast(r.missingFiles
+        ? r.missingFiles + ' missing files removed · ' + r.removed + ' groups dropped · ' + r.remaining + ' remain'
+        : 'All files still on disk — nothing changed', 'success', 5000);
+      await loadFile(currentFile);
+    } catch(e) { toast(e.message, 'error'); }
+  }
+
   async function saveOverrides() {
     if (!currentFile) return;
-    try { await API.saveOverrides(currentFile, overrides); toast('Selections saved.','success'); }
+    try { await API.saveOverrides(currentFile, overrides, [...deselectedGroups]); toast('Selections saved.','success'); }
     catch(e) { toast(e.message,'error'); }
   }
 
@@ -1478,13 +1549,15 @@ const Page_review = (() => {
       keepTarget:   el('keep-target')?.value.trim()||null,
       reproduceStructure: el('reproduce-structure')?.checked!==false,
       selections: {...overrides},
+      deselectedGroups: [...deselectedGroups],
       deselectFilters: [...deselectFilters],
       locked: Object.keys(locked).filter(p=>locked[p])
     };
     if (!dryRun && Object.values(actions).includes('delete_permanent')) {
       if (!await confirm('⚠ Permanent delete','Files will be permanently deleted — no recovery possible.','Yes, delete permanently')) return;
     }
-    if (!dryRun && !await confirm('Run actions','Apply to '+getVisible().length+' visible groups?','Run')) return;
+    const deselNote = deselectedGroups.size ? ' ('+deselectedGroups.size+' deselected groups will be skipped)' : '';
+    if (!dryRun && !await confirm('Run actions','Apply to '+getVisible().length+' visible groups?'+deselNote,'Run')) return;
     const res = el('action-result');
     if (res) { res.innerHTML='<div class="text-muted">Running…</div>'; res.classList.remove('hidden'); }
     try {
@@ -1493,8 +1566,8 @@ const Page_review = (() => {
       const s = r.stats;
       const color = dryRun ? 'blue' : (s.errors > 0 ? 'orange' : 'green');
       const label = dryRun ? 'Dry run' : 'Done';
-      const skippedNote = (s.skipped||0) > 0 ? ' (not on disk — already moved/deleted)' : '';
-      const summary = label + ': ♻' + s.recycled + ' recycled · 📁' + s.moved + ' moved · 🗑' + s.deleted + ' deleted · ✓' + s.kept + ' kept · ⏭' + (s.skipped||0) + ' not found' + skippedNote + ' · ⚠' + s.errors + ' errors';
+      const skippedNote = (s.skipped||0) > 0 ? ' (locked, deselected, filtered or not on disk)' : '';
+      const summary = label + ': ♻' + s.recycled + ' recycled · 📁' + s.moved + ' moved · 🗑' + s.deleted + ' deleted · ✓' + s.kept + ' kept · ⏭' + (s.skipped||0) + ' skipped' + skippedNote + ' · ⚠' + s.errors + ' errors';
       let errDetail = '';
       if (s.errors > 0) {
         errDetail = '<br><small>' + (r.log||[]).filter(l=>l.action==='error').slice(0,5).map(l=>escH(baseName(l.file))+': '+escH(l.reason)).join('<br>') + '</small>';

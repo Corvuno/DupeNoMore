@@ -441,6 +441,7 @@ class ScanManager extends EventEmitter {
         wildcardPatterns:        fso.wildcardPatterns || [],
         wildcardLogic:           fso.wildcardLogic || 'or',
         useVersionGroups:        fso.useVersionGroups || false,
+        excludePatterns:         config.filters?.excludePatterns || [],
         onProgress: (phase, done, total, msg) => {
           if (state.aborted) return;
           if (phase === 'collect') this._setPhase(state, 'collect', msg);

@@ -86,7 +86,7 @@ const API = (() => {
     getResult: (fn) => API.get(`/results/${encodeURIComponent(fn)}`),
     deleteResult: (fn) => API.del(`/results/${encodeURIComponent(fn)}`),
     filterResult: (fn, type, value) => API.post(`/results/${encodeURIComponent(fn)}/filter`, { type, value }),
-    saveOverrides: (fn, overrides) => API.post(`/results/${encodeURIComponent(fn)}/overrides`, { overrides }),
+    saveOverrides: (fn, overrides, deselectedGroups) => API.post(`/results/${encodeURIComponent(fn)}/overrides`, { overrides, deselectedGroups }),
     runActions: (fn, actionSpec, dryRun) => API.post(`/results/${encodeURIComponent(fn)}/actions`, { actionSpec, dryRun }),
 
     getUndoLog: () => API.get('/actions/undo-log'),

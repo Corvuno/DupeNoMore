@@ -27,7 +27,7 @@ function isPathAllowed(filePath) {
   });
 }
 const scanManager= require('../core/scanManager');
-const { getResultFiles, loadResult, deleteResult, filterGroups, saveOverrides, loadOverrides } = require('../core/results');
+const { getResultFiles, loadResult, deleteResult, filterGroups, saveOverrides, loadOverrides, saveDeselectedGroups, loadDeselectedGroups } = require('../core/results');
 const { executeActions, getUndoLog, undo, getTrashStats, emptyTrash } = require('../core/actions');
 const hashCache  = require('../core/hashCache');
 const ignoreList = require('../core/ignoreList');
@@ -275,7 +275,8 @@ router.get('/results/:filename', (req, res) => {
   try {
     const data = loadResult(resultPath(req.params.filename, cfg));
     const overrides = loadOverrides(configMgr.getDataDir(), req.params.filename);
-    res.json({ ...data, overrides });
+    const deselectedGroups = loadDeselectedGroups(configMgr.getDataDir(), req.params.filename);
+    res.json({ ...data, overrides, deselectedGroups });
   } catch (e) { res.status(404).json({ error: e.message }); }
 });
 
@@ -294,7 +295,13 @@ router.post('/results/:filename/filter', (req, res) => {
 });
 
 router.post('/results/:filename/overrides', (req, res) => {
-  try { saveOverrides(configMgr.getDataDir(), req.params.filename, req.body.overrides); res.json({ ok: true }); }
+  try {
+    saveOverrides(configMgr.getDataDir(), req.params.filename, req.body.overrides);
+    if (Array.isArray(req.body.deselectedGroups)) {
+      saveDeselectedGroups(configMgr.getDataDir(), req.params.filename, req.body.deselectedGroups);
+    }
+    res.json({ ok: true });
+  }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
