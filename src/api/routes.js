@@ -77,6 +77,24 @@ router.get('/config', (req, res) => {
   res.json(configMgr.load());
 });
 
+// Partial save: only the sections present in the body are written. The setup page
+// has folders and scan settings side by side, each holding its own copy of the
+// config; saving the whole object from one panel put back the other panel's stale
+// values (turning a folder off, then changing a scan setting, turned it back on).
+router.patch('/config', (req, res) => {
+  try {
+    const cfg = req.body;
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg))
+      return res.status(400).json({ error: 'Invalid config: expected JSON object' });
+    if ('folders' in cfg && !Array.isArray(cfg.folders))
+      return res.status(400).json({ error: 'Invalid config: folders must be array' });
+    configMgr.save(cfg);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/config', (req, res) => {
   try {
     const cfg = req.body;

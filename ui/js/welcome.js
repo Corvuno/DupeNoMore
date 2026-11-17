@@ -8,9 +8,9 @@ const Page_welcome = (() => {
   async function refresh(container) { render(container); }
 
   async function render(container) {
-    let resultCount = 0, folderCount = 0;
+    let resultCount = 0, folderCount = 0, activeCount = 0;
     try { resultCount = (await API.getResults()).length; } catch {}
-    try { const cfg = await API.getConfig(); folderCount = (cfg.folders || []).length; } catch {}
+    try { const cfg = await API.getConfig(); folderCount = (cfg.folders || []).length; activeCount = (cfg.folders || []).filter(f => f.active !== false).length; } catch {}
 
     const firstTime = folderCount === 0 && resultCount === 0;
 
@@ -40,7 +40,7 @@ const Page_welcome = (() => {
           <button class="btn btn-primary welcome-cta" id="welcome-start">Add folders to begin →</button>
         ` : `
           <div class="welcome-stats">
-            <div class="welcome-stat"><div class="welcome-stat-n">${folderCount}</div><div class="welcome-stat-l">folders configured</div></div>
+            <div class="welcome-stat"><div class="welcome-stat-n">${activeCount}</div><div class="welcome-stat-l">${activeCount === folderCount ? `folder${folderCount === 1 ? '' : 's'} to scan` : `of ${folderCount} folders to scan`}</div></div>
             <div class="welcome-stat"><div class="welcome-stat-n">${resultCount}</div><div class="welcome-stat-l">saved scans</div></div>
           </div>
           <div class="welcome-actions">

@@ -930,3 +930,32 @@ describe('fileScan: copy pattern scan finds copies', () => {
     expect(job.groupCount >= 0).toBe(true); // at minimum scan completed
   }, 15000);
 });
+
+// ── Config: partial save ──────────────────────────────────────────────────────
+// The setup page edits folders and scan settings in two panels side by side. Each
+// saves only its own part, so a save from one never puts back stale values of the other.
+describe('Config: PATCH saves only the sections sent', () => {
+  test('saving scan settings does not undo a folder toggle, and the other way round', async () => {
+    const before = (await api.get('/api/config')).body;
+    const folders = [{ path: path.join(tmpDir, 'pa'), active: true, recursive: true },
+                     { path: path.join(tmpDir, 'pb'), active: true, recursive: true }];
+    await api.patch('/api/config').send({ folders }).expect(200);
+    const staleScan = { ...before.scan }, staleFilters = { ...before.filters, minSizeKB: 33 };
+
+    folders[1].active = false;
+    await api.patch('/api/config').send({ folders }).expect(200);           // folder panel
+    await api.patch('/api/config').send({ scan: staleScan, filters: staleFilters }).expect(200); // scan panel
+
+    const after = (await api.get('/api/config')).body;
+    expect(after.folders.map(f => f.active)).toEqual([true, false]);
+    expect(after.filters.minSizeKB).toBe(33);
+
+    await api.patch('/api/config').send({ folders: [] }).expect(200);
+    expect((await api.get('/api/config')).body.filters.minSizeKB).toBe(33);
+  });
+
+  test('PATCH rejects a non-object and a folders value that is not a list', async () => {
+    await api.patch('/api/config').send([1]).expect(400);
+    await api.patch('/api/config').send({ folders: 'x' }).expect(400);
+  });
+});

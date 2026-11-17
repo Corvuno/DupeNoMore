@@ -149,7 +149,7 @@ const Page_folders = (() => {
 
   async function save() {
     try {
-      await API.saveConfig(config);
+      await API.patchConfig({ folders: config.folders });
     } catch (e) {
       toast('Failed to save: ' + e.message, 'error');
     }
