@@ -73,6 +73,8 @@ const API = (() => {
     // Convenience
     getConfig: () => API.get('/config'),
     saveConfig: (cfg) => API.post('/config', cfg),
+    // Save only the given sections, e.g. { folders } or { scan, filters }
+    patchConfig: (part) => API.patch('/config', part),
     pickFolder: () => API.get('/pick-folder'),
 
     getScans: () => API.get('/scans'),

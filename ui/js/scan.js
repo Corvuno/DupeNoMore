@@ -376,7 +376,7 @@ const Page_scan = (() => {
 
   async function save(notify = false) {
     try {
-      await API.saveConfig(config);
+      await API.patchConfig({ scan: config.scan, filters: config.filters });
       if (notify) toast('Settings saved.', 'success');
     } catch (e) {
       toast('Save failed: ' + e.message, 'error');
