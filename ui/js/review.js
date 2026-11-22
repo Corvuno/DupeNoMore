@@ -27,6 +27,11 @@ const Page_review = (() => {
   let _page = 0;
   const PAGE_SIZE = 500;  // save every 50 changes
   let container     = null;
+  // Find row: name search, size and type filters. They only hide groups; marks and ticks stay.
+  let find = ReviewFilters.emptyFilters();
+  // Shift-click anchors: the last card (path) and group tick (source) clicked without Shift
+  let cardAnchor  = null;
+  let groupAnchor = null;
 
   // Current action config — used for badge labels
   let actionCfg = { certain:'keep_in_place', probable:'keep_in_place', uncertain:'keep_in_place', removeTarget:null };
@@ -102,6 +107,30 @@ const Page_review = (() => {
         </span>
         <button class="btn btn-ghost btn-sm" id="save-overrides-btn">💾 Save</button>
         <button class="btn btn-primary btn-sm" id="actions-toggle-btn">⚡ Actions</button>
+      </div>
+
+      <!-- Find row: name search (+ mark matching), size and type filters -->
+      <div class="find-row" id="review-find-row">
+        <input id="find-name" class="input" type="search" placeholder="🔎 Search file names… (* ? work)" style="max-width:240px" title="Show only groups with a file whose name contains this text. * and ? work as wildcards.">
+        <button class="btn btn-ghost btn-xs" id="find-keep" title="Mark every matching picture in the shown groups as keep">＋ Keep matching</button>
+        <button class="btn btn-ghost btn-xs" id="find-remove" title="Mark every matching picture in the shown groups as remove">－ Remove matching</button>
+        <div class="sep" style="height:16px;margin:0 2px"></div>
+        <label class="find-label">Size
+          <input type="number" id="find-size-min" class="input find-num" min="0" step="any" placeholder="min" title="Smallest file size">
+          <span style="color:var(--text-3)">–</span>
+          <input type="number" id="find-size-max" class="input find-num" min="0" step="any" placeholder="max" title="Largest file size">
+          <select id="find-size-unit" class="select select-sm" style="width:auto"><option>KB</option><option selected>MB</option></select>
+        </label>
+        <span class="seg" data-mode-for="size" title="Any: a group shows when at least one of its files is in the size range. All: only when every file is.">
+          <button class="seg-btn active" data-mode="any">Any file</button><button class="seg-btn" data-mode="all">All files</button>
+        </span>
+        <div class="sep" style="height:16px;margin:0 2px"></div>
+        <span class="find-label">Type</span>
+        <span id="find-types" class="find-types"></span>
+        <span class="seg" data-mode-for="type" title="Any: a group shows when at least one of its files is a picked type. All: only when every file is.">
+          <button class="seg-btn active" data-mode="any">Any file</button><button class="seg-btn" data-mode="all">All files</button>
+        </span>
+        <button class="btn btn-ghost btn-xs hidden" id="find-clear" title="Clear search, size and type">✕ Clear</button>
       </div>
 
       <!-- Row 2: Auto-select + bulk selection shortcuts -->
@@ -316,6 +345,7 @@ const Page_review = (() => {
         await loadFile(currentFile);
       } catch(e) { toast(e.message, 'error'); }
     });
+    wireFind();
     el('save-overrides-btn')?.addEventListener('click', saveOverrides);
     el('actions-toggle-btn')?.addEventListener('click', () => { actionsOpen=!actionsOpen; el('actions-panel').classList.toggle('hidden',!actionsOpen); });
     el('review-result-select')?.addEventListener('change', e => { if (e.target.value) loadFile(e.target.value); });
@@ -504,6 +534,98 @@ const Page_review = (() => {
     });
   }
 
+  // ── Find row ────────────────────────────────────────────────────────────
+  function wireFind() {
+    let t = null;
+    const nameEl = el('find-name');
+    nameEl?.addEventListener('input', () => {
+      clearTimeout(t);
+      t = setTimeout(() => { find.name = nameEl.value; findChanged(); }, 150);
+    });
+    nameEl?.addEventListener('keydown', e => { if (e.key === 'Escape') { nameEl.value = ''; find.name = ''; findChanged(); } });
+    const readSize = () => {
+      const unit = el('find-size-unit').value;
+      find.sizeMin = ReviewFilters.parseSize(el('find-size-min').value, unit);
+      find.sizeMax = ReviewFilters.parseSize(el('find-size-max').value, unit);
+      findChanged();
+    };
+    ['find-size-min', 'find-size-max'].forEach(id => el(id)?.addEventListener('input', readSize));
+    el('find-size-unit')?.addEventListener('change', readSize);
+    container.querySelectorAll('.seg[data-mode-for]').forEach(seg => {
+      seg.addEventListener('click', e => {
+        const b = e.target.closest('.seg-btn'); if (!b) return;
+        seg.querySelectorAll('.seg-btn').forEach(x => x.classList.toggle('active', x === b));
+        if (seg.dataset.modeFor === 'size') find.sizeMode = b.dataset.mode;
+        else find.typeMode = b.dataset.mode;
+        findChanged();
+      });
+    });
+    el('find-types')?.addEventListener('click', e => {
+      const c = e.target.closest('[data-type]'); if (!c) return;
+      const ty = c.dataset.type;
+      if (find.types.has(ty)) find.types.delete(ty); else find.types.add(ty);
+      c.classList.toggle('active', find.types.has(ty));
+      findChanged();
+    });
+    el('find-keep')?.addEventListener('click', () => markMatching('keep'));
+    el('find-remove')?.addEventListener('click', () => markMatching('remove'));
+    el('find-clear')?.addEventListener('click', () => {
+      find = ReviewFilters.emptyFilters();
+      ['find-name', 'find-size-min', 'find-size-max'].forEach(id => { if (el(id)) el(id).value = ''; });
+      container.querySelectorAll('.seg[data-mode-for] .seg-btn').forEach(x => x.classList.toggle('active', x.dataset.mode === 'any'));
+      renderTypeChips();
+      findChanged();
+    });
+  }
+
+  function findChanged() {
+    el('find-clear')?.classList.toggle('hidden', !ReviewFilters.isActive(find));
+    _page = 0;
+    applyFilters();
+  }
+
+  // One chip per file type in this result, with how many files have it
+  function renderTypeChips() {
+    const box = el('find-types');
+    if (!box) return;
+    const counts = ReviewFilters.typeCounts(groups.map(allFiles));
+    // A picked type that is not in this result any more would hide everything
+    for (const ty of [...find.types]) if (!counts.some(([e]) => e === ty)) find.types.delete(ty);
+    box.innerHTML = counts.map(([ty, n]) =>
+      '<button class="chip chip-sm' + (find.types.has(ty) ? ' active' : '') + '" data-type="' + escH(ty) + '">' +
+      escH(ty.toUpperCase()) + ' <span class="chip-count">' + n + '</span></button>').join('');
+  }
+
+  // Keep or remove every picture whose name matches the search, in the groups shown. Locked stay.
+  function markMatching(action) {
+    const q = String(find.name || '').trim();
+    if (!q) { toast('Type part of a file name in the search box first', 'info'); return; }
+    let n = 0;
+    getVisible().forEach(g => allFiles(g).forEach(f => {
+      if (locked[f.path] || !ReviewFilters.nameMatches(f.path, q)) return;
+      overrides[f.path] = action; n++;
+    }));
+    applyFilters();
+    persistDeselected();
+    toast((action === 'keep' ? 'Keep: ' : 'Remove: ') + n + ' matching picture' + (n === 1 ? '' : 's'), 'success', 2500);
+  }
+
+  // Cards and groups currently on screen, in page order (filtered-away and ignored ones excluded)
+  function shownCardPaths() {
+    return [...container.querySelectorAll('.review-group .rev-card')]
+      .filter(c => c.style.display !== 'none' && c.closest('.review-cards-row')?.style.display !== 'none')
+      .map(c => c.dataset.path);
+  }
+  function shownGroupSources() {
+    const bySrc = new Map(groups.map(g => [g.id, g.source]));
+    return [...container.querySelectorAll('.review-group')].map(d => bySrc.get(d.dataset.groupId));
+  }
+
+  function updateAll() {
+    container.querySelectorAll('.rev-card').forEach(c => updateCard(c, c.dataset.path, c.dataset.conf));
+    applyFilters();
+  }
+
   // Read current action settings and update the actionCfg object + all badges
   function updateActionCfg() {
     container.querySelectorAll('.action-select').forEach(s => {
@@ -553,6 +675,7 @@ const Page_review = (() => {
         const paths = allFiles(g).map(f => f.path);
         return !isGroupIgnored(paths);
       });
+      renderTypeChips();
       if (groups.length < beforeCount) console.log('[ignore] Filtered ' + (beforeCount - groups.length) + ' ignored groups');
       // Build set of individually ignored files
       ignoredFiles = new Set();
@@ -659,6 +782,7 @@ const Page_review = (() => {
       }
       // Hi-fi filter
       if (_hifiOnly && !allFiles(g).some(f => bloatCheck(f, g, _hifiThr))) return false;
+      if (!ReviewFilters.groupPasses(allFiles(g), find)) return false;
       return true;
     });
   }
@@ -691,7 +815,11 @@ const Page_review = (() => {
   function updateStats(visible) {
     const c2 = el('review-count');
     const deselCount = groups.filter(g => deselectedGroups.has(g.source)).length;
-    if (c2) c2.textContent = visible.length + ' of ' + groups.length + ' groups' + (deselCount ? ' · ' + deselCount + ' deselected' : '');
+    if (c2) {
+      c2.textContent = visible.length + ' of ' + groups.length + ' groups' + (deselCount ? ' · ' + deselCount + ' deselected' : '');
+      // Bulk buttons act on shown groups only, so make a narrowed view obvious
+      c2.classList.toggle('count-filtered', visible.length < groups.length);
+    }
 
     let removeBytes = 0, removeCount = 0, reviewedCount = 0;
     for (const g of groups) {
@@ -845,13 +973,23 @@ const Page_review = (() => {
 
     div.querySelectorAll('.rev-card').forEach(card => {
       const path = card.dataset.path;
+      // Stop Shift-click from selecting text on the page
+      card.addEventListener('mousedown', e => { if (e.shiftKey) e.preventDefault(); });
       card.addEventListener('click', e => {
         if (e.target.closest('button')) return;
-        if (!locked[path]) {
-          overrides[path] = overrides[path]==='keep' ? 'remove' : 'keep';
-          updateCard(card, path, card.dataset.conf);
-          applyFilters();
+        if (locked[path]) return;
+        const next = overrides[path]==='keep' ? 'remove' : 'keep';
+        if (e.shiftKey && cardAnchor) {
+          // Like a file explorer: every shown picture from the last click to this one gets this mark
+          ReviewFilters.rangeBetween(shownCardPaths(), cardAnchor, path)
+            .forEach(p => { if (!locked[p]) overrides[p] = next; });
+          persistDeselected();
+        } else {
+          overrides[path] = next;
+          cardAnchor = path;
         }
+        updateCard(card, path, card.dataset.conf);
+        applyFilters();
       });
       card.querySelector('.btn-lock')?.addEventListener('click', e => {
         e.stopPropagation();
@@ -864,11 +1002,22 @@ const Page_review = (() => {
     });
 
     // Group select checkbox: unticked groups are skipped entirely by actions
-    div.querySelector('.group-select-cb')?.addEventListener('change', e => {
-      setGroupSelected(group, e.target.checked);
+    // Shift-click ticks or unticks every shown group from the last ticked one to this one.
+    div.querySelector('.group-select-cb')?.addEventListener('click', e => {
+      const checked = e.target.checked;
+      const range = e.shiftKey && groupAnchor
+        ? ReviewFilters.rangeBetween(shownGroupSources(), groupAnchor, group.source)
+        : [group.source];
+      if (!e.shiftKey || !groupAnchor) groupAnchor = group.source;
+      const bySrc = new Map(groups.map(g => [g.source, g]));
+      range.forEach(src => { const g = bySrc.get(src); if (g) setGroupSelected(g, checked); });
       persistDeselected();
-      if (showDeselOnly) applyFilters();
-      else { syncGroupEl(div, group); updateStats(getVisible()); }
+      if (showDeselOnly) { applyFilters(); return; }
+      container.querySelectorAll('.review-group').forEach(d => {
+        const g = groups.find(x => x.id === d.dataset.groupId);
+        if (g && range.includes(g.source)) syncGroupEl(d, g);
+      });
+      updateStats(getVisible());
     });
 
     // Ignore group button
@@ -1215,7 +1364,7 @@ const Page_review = (() => {
 
         // Filename + full path + metadata table
         '<div class="rev-meta">',
-          '<div class="rev-meta-name">' + escH(name) +
+          '<div class="rev-meta-name' + (String(find.name||'').trim() && ReviewFilters.nameMatches(path, find.name) ? ' name-hit' : '') + '">' + escH(name) +
           (nameScore(name) <= 1 ? ' <span style="font-size:9px;color:var(--orange);opacity:0.7">' + nameLabel(nameScore(name)) + '</span>' : '') +
           '</div>',
           '<div class="rev-meta-dir" title="' + escH(fullDir) + '">' + escH(fullDir) + '</div>',
