@@ -273,7 +273,7 @@ const Page_review = (() => {
         <span>Reproduce folder structure in destination</span>
       </label>
       <details style="margin-bottom:12px;border:1px solid var(--border);border-radius:6px;padding:8px 12px">
-        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-2)">⚙ Deselect filters (US-071) — protect files from removal</summary>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-2)">⚙ Protect files from removal</summary>
         <div style="margin-top:10px;font-size:12px;color:var(--text-2);margin-bottom:8px">
           Files matching these filters will be skipped (not removed) even if marked as remove.
         </div>
@@ -308,7 +308,7 @@ const Page_review = (() => {
     el('filter-empty-btn')?.addEventListener('click', () => filterFromFile('empty'));
     el('filter-missing-btn')?.addEventListener('click', recheckMissing);
     el('filter-pct-below')?.addEventListener('click', async () => {
-      const val = prompt('Remove groups where best match is BELOW this %.\n\n84% = dhash threshold boundary.\nEnter 0-100:');
+      const val = prompt('Remove groups where best match is BELOW this %.\n\nEnter 0-100:');
       if (val === null) return;
       const thr = parseInt(val);
       if (isNaN(thr) || thr < 0 || thr > 100) { toast('Invalid percentage', 'error'); return; }
@@ -327,17 +327,7 @@ const Page_review = (() => {
       const parts = val.split(/[\-–]/);
       const lo = parseInt(parts[0]), hi = parseInt(parts[1]);
       if (isNaN(lo) || isNaN(hi) || lo < 0 || hi > 100 || lo >= hi) { toast('Invalid range — use format: 80-90', 'error'); return; }
-      // Remove below lo first, then above hi... actually we want to remove BETWEEN lo and hi
-      // We need to do this as two sequential filters: remove below hi, then remove above lo
-      // Actually we need a single operation. Let me call both:
-      await filterFromFile('match_pct_below', hi + 1);  // remove everything below hi+1 that's also...
-      // No, that's wrong. We need a custom filter. Let me just call both sequentially:
-      // First remove everything below lo (keeps lo and above)
-      // Then remove everything above hi (keeps hi and below)
-      // Result: only groups between lo and hi remain... but that's the OPPOSITE of what we want.
-      // The user wants to REMOVE groups in the range. So:
-      // We can't easily do "remove between" with two "remove below/above" calls.
-      // Let me add a match_pct_range filter type instead.
+      if (!await confirm('Filter groups','Permanently remove all groups with a best match between ' + lo + '% and ' + hi + '% from this result file?','Remove')) return;
       toast('Removing groups between ' + lo + '% and ' + hi + '%...', 'info');
       try {
         const r = await API.filterResult(currentFile, 'match_pct_range', lo + '-' + hi);
@@ -757,10 +747,10 @@ const Page_review = (() => {
 
     banner.style.display = '';
     banner.innerHTML = '<span style="font-size:11px;color:var(--text-3);font-family:var(--font-mono)">' +
-      (algos.length ? algos.map(a => a + ':' + (ths[a]??10)).join(' \xb7 ') : 'MD5 only') +
-      ' \xb7 ensemble=' + (sc.ensureMin??1) +
-      ' \xb7 depth=' + depthLabel +
-      ' \xb7 ' + (sc.matchLogic||'threshold') +
+      (algos.length ? algos.map(a => a.charAt(0) + a.slice(1).replace('hash','Hash') + ' ' + (ths[a]??10)).join(' \xb7 ') : 'Exact copies only') +
+      ' \xb7 ' + (sc.ensureMin??1) + ' must agree' +
+      ' \xb7 Depth: ' + depthLabel +
+      ' \xb7 Match logic: ' + ({threshold:'threshold', and:'all must match', or:'any match'}[sc.matchLogic||'threshold'] || sc.matchLogic) +
       '</span>';
   }
 
@@ -1661,8 +1651,13 @@ const Page_review = (() => {
   }
 
   async function filterFromFile(type, value) {
-    const label = value !== undefined ? type + ' ' + value + '%' : type;
-    if (!await confirm('Filter groups','Permanently remove all ' + label + ' groups from this result file?','Remove')) return;
+    const label = {
+      singletons:      'single-file groups',
+      empty:           'empty groups',
+      match_pct_below: 'groups with a best match below ' + value + '%',
+      match_pct_above: 'groups with a best match above ' + value + '%',
+    }[type] || 'matching groups';
+    if (!await confirm('Filter groups','Permanently remove all ' + label + ' from this result file?','Remove')) return;
     try {
       const r = await API.filterResult(currentFile, type, value);
       toast('Removed ' + r.removed + ', ' + r.remaining + ' remain.', 'success');
