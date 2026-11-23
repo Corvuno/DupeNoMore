@@ -56,9 +56,9 @@ const ProfileEditor = (() => {
           <div>
             <label class="label">Match logic</label>
             <select id="pe-matchLogic" class="select">
-              <option value="threshold" ${p.scan.matchLogic==='threshold'?'selected':''}>Threshold (ensureMin)</option>
-              <option value="and" ${p.scan.matchLogic==='and'?'selected':''}>AND (all algos)</option>
-              <option value="or"  ${p.scan.matchLogic==='or'?'selected':''}>OR (any algo)</option>
+              <option value="threshold" ${p.scan.matchLogic==='threshold'?'selected':''}>Threshold — enough must match</option>
+              <option value="and" ${p.scan.matchLogic==='and'?'selected':''}>AND — all must match</option>
+              <option value="or"  ${p.scan.matchLogic==='or'?'selected':''}>OR — any match</option>
             </select>
           </div>
         </div>
